@@ -102,14 +102,21 @@ export function usageOf(id, limits, credits) {
   if (id === 'claude' && limits?.claude) pct = Math.max(0, ...Object.values(limits.claude.unifiedWindows || {}).filter(w => w.resetsAt * 1000 > Date.now()).map(w => w.utilization * 100));
   if (id === 'codex' && limits?.codex) pct = Math.max(0, ...[limits.codex.primary, limits.codex.secondary].filter(Boolean).map(w => w.usedPct));
   if (id === 'antigravity' && limits?.antigravity) pct = Math.max(0, ...limits.antigravity.groups.flatMap(g => g.windows.map(w => 100 - w.remainingPct)));
+  if (id === 'copilot' && limits?.copilot) {
+    const cp = limits.copilot;
+    return { pct: null, text: `${cp.creditsUsed ?? 0} credits used (${cp.requests || 1} req)` };
+  }
+  if (id === 'copilot') return { pct: null, text: 'ready (0 credits used)' };
+  if (id === 'ollama' || String(id).includes('qwen')) return { pct: null, text: 'local (unlimited)' };
   return pct == null || !isFinite(pct) ? { pct: null, text: 'limits unknown' } : { pct: Math.round(pct), text: `${Math.round(pct)}% used` };
 }
 
 export function teamStripHtml(team, tools, limits, credits, busyIds = new Set()) {
   return team.map(m => {
     const u = usageOf(m.id, limits, credits);
+    const initial = m.id === 'copilot' ? 'C' : (tools[m.id] || m.id)[0];
     return `<span class="mate ${m.id} ${u.out ? 'out' : ''} ${busyIds.has(m.id) ? 'busy' : ''}" title="${esc(tools[m.id] || m.id)} · ${esc(ROLE_LABEL[m.role] || m.role)} · ${esc(u.text)}">
-      <span class="av">${esc((tools[m.id] || m.id)[0])}</span>
+      <span class="av ${m.id}">${esc(initial)}</span>
       <span class="mate-txt"><b>${esc(tools[m.id] || m.id)}</b><span>${esc(ROLE_LABEL[m.role] || m.role)}</span></span>
       ${u.pct != null ? `<span class="mini-meter ${u.pct >= 90 ? 'hot' : u.pct >= 70 ? 'warm' : ''}"><i style="width:${Math.min(100, u.pct)}%"></i></span>` : ''}
     </span>`;
@@ -126,7 +133,7 @@ export async function teamDialog(t, tools, save) {
     <div class="team-rows">${Object.entries(tools).map(([id, label]) => {
       const u = usageOf(id, limits, credits);
       return `<div class="team-row">
-        <span class="mate ${id}"><span class="av">${esc(label[0])}</span><b>${esc(label)}</b></span>
+        <span class="mate ${id}"><span class="av ${id}">${id === 'copilot' ? 'C' : esc(label[0])}</span><b>${esc(label)}</b></span>
         <select data-role="${id}">${Object.entries(ROLE_LABEL).map(([k, v]) => `<option value="${k}" ${roleOf(id) === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
         <span class="team-usage">${u.pct != null ? `<span class="mini-meter wide ${u.pct >= 90 ? 'hot' : u.pct >= 70 ? 'warm' : ''}"><i style="width:${Math.min(100, u.pct)}%"></i></span>` : ''}<span class="tiny muted">${esc(u.text)}</span></span>
       </div>`;
