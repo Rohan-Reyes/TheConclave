@@ -27,7 +27,7 @@ export function toast(msg, isErr = false) {
   toastTimer = setTimeout(() => { t.className = ''; }, isErr ? 6000 : 2600);
 }
 
-export const TOOL_LABEL = { claude: 'Claude Code', antigravity: 'Antigravity', codex: 'Codex', hub: 'Conclave', import: 'Import', mcp: 'MCP' };
+export const TOOL_LABEL = { claude: 'Claude Code', antigravity: 'Antigravity', codex: 'Codex', copilot: 'GitHub Copilot', hub: 'Conclave', import: 'Import', mcp: 'MCP' };
 export const badge = (tool, extra = '') => `<span class="badge ${esc(tool)}">${esc(TOOL_LABEL[tool] || tool)}${extra ? ' · ' + esc(extra) : ''}</span>`;
 
 export function ago(iso) {

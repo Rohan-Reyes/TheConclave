@@ -267,6 +267,7 @@ function usageLine(tool, L) {
     return [w.five_hour && `5-hour ${pct(w.five_hour.utilization * 100)} used`, w.seven_day && `weekly ${pct(w.seven_day.utilization * 100)} used`].filter(Boolean).join(', ') || 'limits unknown';
   }
   if (tool === 'codex' && L.codex) return [L.codex.primary && `5-hour ${pct(L.codex.primary.usedPct)} used`, L.codex.secondary && `weekly ${pct(L.codex.secondary.usedPct)} used`].filter(Boolean).join(', ');
+  if (tool === 'copilot' && L.copilot) return `${L.copilot.creditsUsed} credits used (${L.copilot.requests} request${L.copilot.requests === 1 ? '' : 's'})`;
   if (tool === 'antigravity' && L.antigravity) return L.antigravity.groups.map(g => `${g.name.toLowerCase()}: ${g.windows.map(w => `${w.window} ${pct(100 - w.remainingPct)} used`).join(', ')}`).join('; ');
   return 'limits unknown';
 }

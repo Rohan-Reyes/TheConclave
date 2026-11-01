@@ -196,5 +196,12 @@ function drawLimits(l, cr = {}) {
   cards.push(`<div class="panel pad limit-card"><h3>${badge('codex')}<span class="tiny muted">${x ? 'seen ' + ago(x.seen) : ''}</span></h3>${outNote(cr, 'codex')}
     ${x ? [x.primary, x.secondary].filter(Boolean).map(w2 => meter(lab(w2), w2.usedPct, until(w2.resetsAt))).join('')
       : '<div class="small muted">Appears after Codex runs once.</div>'}</div>`);
+    const cp = l.copilot;
+  if (cp) {
+    cards.push(`<div class="panel pad limit-card"><h3>${badge('copilot')}<span class="tiny muted">${'seen ' + ago(cp.seen)}</span></h3>${outNote(cr, 'copilot')}
+      <div class="meter-row"><span class="tiny">Credits</span><b class="small">${cp.creditsUsed} used</b></div>
+      <div class="tiny muted" style="margin-top:4px">${cp.requests} request${cp.requests === 1 ? '' : 's'}${cp.tokens?.input ? ` · ${fmt(cp.tokens.input.tokenCount || 0)} in · ${fmt(cp.tokens.output?.tokenCount || 0)} out` : ''}</div>
+    </div>`);
+  }
   box.innerHTML = cards.join('');
 }

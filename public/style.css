@@ -1,8 +1,8 @@
 :root {
   --bg: #f6f5f2; --panel: #ffffff; --panel-2: #f0eee9; --line: #e2dfd8;
   --text: #1d1c1a; --muted: #6f6b63; --accent: #2f6fdf; --danger: #c43d2f; --ok: #1f8a4c;
-  --claude: #d97757; --antigravity: #4285f4; --codex: #10a37f; --hub: #8a63d2; --qwen: #6366f1; --ollama: #6366f1;
-  --s-claude: #d97757; --s-antigravity: #4285f4; --s-codex: #10a37f;
+  --claude: #d97757; --antigravity: #4285f4; --codex: #10a37f; --copilot: #6e40c9; --hub: #8a63d2; --qwen: #6366f1; --ollama: #6366f1;
+  --s-claude: #d97757; --s-antigravity: #4285f4; --s-codex: #10a37f; --s-copilot: #6e40c9;
   --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
   --radius: 10px;
   color-scheme: light;
@@ -11,7 +11,7 @@
   :root:not([data-theme="light"]) {
     --bg: #151514; --panel: #1e1e1c; --panel-2: #262624; --line: #33322f;
     --text: #ecebe7; --muted: #9b978e; --accent: #6ea0ff; --danger: #ff7b6b; --ok: #4cc47f;
-    --s-claude: #cf6d4d; --s-antigravity: #5b8ff0; --s-codex: #22a06b;
+    --s-claude: #cf6d4d; --s-antigravity: #5b8ff0; --s-codex: #22a06b; --s-copilot: #8957e5;
     color-scheme: dark;
   }
 }
@@ -100,7 +100,7 @@ a.item:hover { background: var(--panel-2); text-decoration: none; }
 .item .snippet mark { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text); border-radius: 3px; padding: 0 2px; }
 .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); white-space: nowrap; color: var(--muted); }
 .badge::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--c, var(--muted)); }
-.badge.claude { --c: var(--claude); } .badge.antigravity { --c: var(--antigravity); } .badge.codex { --c: var(--codex); } .badge.hub, .badge.import { --c: var(--hub); }
+.badge.claude { --c: var(--claude); } .badge.antigravity { --c: var(--antigravity); } .badge.codex { --c: var(--codex); } .badge.copilot { --c: var(--copilot); } .badge.hub, .badge.import { --c: var(--hub); }
 .chip { font-size: 11px; padding: 1px 7px; border-radius: 99px; background: var(--panel-2); color: var(--muted); }
 .empty { padding: 30px; text-align: center; color: var(--muted); }
 
@@ -322,6 +322,7 @@ body.focus-mode #focus { background: var(--accent); color: #fff; border-color: t
 .av.claude, .mate.claude .av { background: var(--claude); }
 .av.antigravity, .mate.antigravity .av { background: var(--antigravity); }
 .av.codex, .mate.codex .av { background: var(--codex); }
+.av.copilot, .mate.copilot .av { background: var(--copilot); }
 .av.qwen, .mate.qwen .av, .av.ollama, .mate.ollama .av { background: var(--qwen); }
 .mini-meter { width: 34px; height: 4px; border-radius: 99px; background: var(--line); overflow: hidden; display: inline-block; }
 .mini-meter.wide { width: 90px; }

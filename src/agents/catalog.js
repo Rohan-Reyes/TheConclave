@@ -75,6 +75,46 @@ function readCodexLimits() {
   return null;
 }
 
+let copilotCache = { at: 0, data: null };
+function copilotLimits() {
+  if (Date.now() - copilotCache.at < 30_000) return copilotCache.data;
+  copilotCache = { at: Date.now(), data: readCopilotLimits() };
+  return copilotCache.data;
+}
+function readCopilotLimits() {
+  const sessionDir = path.join(HOME, '.copilot', 'session-state');
+  if (!fs.existsSync(sessionDir)) return null;
+  try {
+    const sessions = fs.readdirSync(sessionDir)
+      .map(name => {
+        const p = path.join(sessionDir, name, 'events.jsonl');
+        return fs.existsSync(p) ? { p, t: fs.statSync(p).mtimeMs } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.t - a.t)
+      .slice(0, 5);
+
+    for (const { p, t } of sessions) {
+      const lines = fs.readFileSync(p, 'utf8').split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i].includes('accountingSnapshot')) continue;
+        try {
+          const snap = JSON.parse(lines[i]).data?.accountingSnapshot;
+          if (!snap) continue;
+          const aiu = snap.totalNanoAiu ? +(snap.totalNanoAiu / 1e9).toFixed(3) : 0;
+          return {
+            creditsUsed: aiu,
+            tokens: snap.tokenDetails || null,
+            requests: snap.totalUserRequests || snap.totalPremiumRequestCost || 1,
+            seen: new Date(t).toISOString(),
+          };
+        } catch {}
+      }
+    }
+  } catch {}
+  return null;
+}
+
 // Antigravity only shows quota in its interactive /usage screen, so open agy in
 // a hidden pseudo-terminal, type /usage, and read the screen.
 let agyRefreshing = null;
@@ -131,6 +171,7 @@ export function getLimits() {
   return {
     claude: claude && { ...claude.value, seen: claude.updated },
     codex: codexLimits(),
+    copilot: copilotLimits(),
     antigravity: agy && { ...agy.value, seen: agy.updated },
     antigravityRefreshing: !!agyRefreshing,
   };
