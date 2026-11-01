@@ -81,8 +81,7 @@ function copilotLimits() {
   copilotCache = { at: Date.now(), data: readCopilotLimits() };
   return copilotCache.data;
 }
-function readCopilotLimits() {
-  const sessionDir = path.join(HOME, '.copilot', 'session-state');
+export function readCopilotLimits({ sessionDir = path.join(HOME, '.copilot', 'session-state') } = {}) {
   if (!fs.existsSync(sessionDir)) return null;
   try {
     const sessions = fs.readdirSync(sessionDir)
@@ -99,14 +98,22 @@ function readCopilotLimits() {
       for (let i = lines.length - 1; i >= 0; i--) {
         if (!lines[i].includes('accountingSnapshot')) continue;
         try {
-          const snap = JSON.parse(lines[i]).data?.accountingSnapshot;
+          const event = JSON.parse(lines[i]);
+          const snap = event.data?.accountingSnapshot;
           if (!snap) continue;
-          const aiu = snap.totalNanoAiu ? +(snap.totalNanoAiu / 1e9).toFixed(3) : 0;
+          const count = value => (typeof value === 'number' || typeof value === 'string' && value.trim() !== '') && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null;
+          const nanoAiu = count(snap.totalNanoAiu);
+          const requests = count(snap.totalUserRequests);
+          const eventTime = typeof event.timestamp === 'string' ? Date.parse(event.timestamp) : NaN;
           return {
-            creditsUsed: aiu,
+            scope: 'session',
+            sessionId: path.basename(path.dirname(p)),
+            creditsUsed: nanoAiu === null ? null : nanoAiu / 1e9,
             tokens: snap.tokenDetails || null,
-            requests: snap.totalUserRequests || snap.totalPremiumRequestCost || 1,
-            seen: new Date(t).toISOString(),
+            // Premium-request cost is not a request count. Preserve genuine zero.
+            requests: Number.isInteger(requests) ? requests : null,
+            seen: new Date(Number.isFinite(eventTime) ? eventTime : t).toISOString(),
+            seenSource: Number.isFinite(eventTime) ? 'event' : 'file',
           };
         } catch {}
       }
@@ -168,11 +175,53 @@ export function parseAgyUsage(text) {
 export function getLimits() {
   const claude = kvGet('ratelimit:claude');
   const agy = kvGet('quota:antigravity');
-  return {
+  return normalizeLimits({
     claude: claude && { ...claude.value, seen: claude.updated },
     codex: codexLimits(),
     copilot: copilotLimits(),
     antigravity: agy && { ...agy.value, seen: agy.updated },
     antigravityRefreshing: !!agyRefreshing,
-  };
+  });
+}
+
+// Keep provider snapshots in storage intact. Normalize a fresh copy on every
+// read, so a cached window disappears when it resets, not 30 seconds later.
+// Clamping to the exhaustion threshold still leaves >=100% detectable.
+export function normalizeLimits(limits, now = Date.now()) {
+  const finite = value => (typeof value === 'number' || typeof value === 'string' && value.trim() !== '') && Number.isFinite(Number(value));
+  const active = (win, scale = 1) => win && (!finite(win.resetsAt) || Number(win.resetsAt) * scale > now);
+  const clamp = (value, max) => Math.min(max, Math.max(0, Number(value)));
+  const result = { ...limits };
+  if (limits.claude) {
+    const c = limits.claude;
+    result.claude = { ...c, unifiedWindows: Object.fromEntries(Object.entries(c.unifiedWindows || {})
+      .filter(([, w]) => active(w, 1000) && finite(w.utilization))
+      .map(([key, w]) => [key, { ...w, utilization: clamp(w.utilization, 1) }])) };
+    if (finite(c.resetsAt) && Number(c.resetsAt) * 1000 <= now) {
+      result.claude.resetsAt = null;
+      if (c.status === 'rejected') result.claude.status = 'unknown';
+    }
+  }
+  if (limits.codex) {
+    result.codex = { ...limits.codex };
+    for (const key of ['primary', 'secondary']) {
+      const w = limits.codex[key];
+      result.codex[key] = active(w) && finite(w.usedPct) ? { ...w, usedPct: clamp(w.usedPct, 100) } : null;
+    }
+  }
+  if (limits.antigravity) {
+    const a = limits.antigravity, seen = Date.parse(a.seen || a.at);
+    result.antigravity = { ...a, groups: (a.groups || []).map(group => ({ ...group,
+      windows: (group.windows || []).map(w => {
+        let resetsAt = finite(w.resetsAt) ? Number(w.resetsAt) : null;
+        if (resetsAt === null && Number.isFinite(seen)) {
+          const parts = [...String(w.refresh || '').matchAll(/(\d+)\s*(d|h|m)(?![a-z])/gi)];
+          if (parts.length) resetsAt = seen + parts.reduce((ms, m) => ms + Number(m[1]) * ({ d:86400000,h:3600000,m:60000 }[m[2].toLowerCase()]), 0);
+        }
+        return { ...w, resetsAt };
+      }).filter(w => active(w) && finite(w.remainingPct))
+        .map(w => ({ ...w, remainingPct: clamp(w.remainingPct, 100) })),
+    })) };
+  }
+  return result;
 }

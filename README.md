@@ -39,6 +39,7 @@ Open that port manually. Keep `CONCLAVE_PORT` consistent in agent/MCP environmen
 - Assignment accounts for effort, agent roles and usage limits. One agent writes to a project folder at a time; independent read tasks can run concurrently. A quota takeover preserves partial work and tells the replacement to inspect it first.
 - Questions appear in separate cards with choices and a text answer. Answers return to the requesting task. Cancelled or superseded tasks reject stale answers. Claude's tool-permission cards are separate from clarification questions.
 - Per-reply diffs include Revert. Git snapshots use a temporary index, preserving your staging area; conflicting later edits prevent an unsafe revert.
+- **Restart recovery is guarded.** If Conclave restarts while a plan is running, completed steps stay done and interrupted read-only steps return to the queue. A build step that was editing at the time is marked failed and waits for you to **Retry** or **Skip** it, because its half-applied edits or commands can't be verified. A plan resumes by itself only in Auto mode, with write access, when nothing was mid-edit and no build step has failed; the chat, plan and settings are checked again just before it resumes. Otherwise the plan stays paused with a note.
 
 ## Everyday tools
 
@@ -46,6 +47,8 @@ Open that port manually. Keep `CONCLAVE_PORT` consistent in agent/MCP environmen
 - Composer templates, persistent drafts, attachments, copied code blocks, pinned/archived chats and edit/resend. Codex receives uploaded raster images through its native image input; Claude reads paths and Antigravity receives file paths.
 - A **project runner** for package.json scripts and saved executable/argument pairs: run, stop, restart, capped live logs, loopback app links, and sending logs to chat. The first run confirms the exact command; package manifest changes invalidate script approval. npm scripts themselves may invoke a shell, as normal npm scripts do.
 - Team roles, model/effort selection, usage screens and automatic quota failover. Waiting chats can resume after a known reset.
+- **Failures are reported by kind.** An agent that is out of credits, one that failed to start (for example a missing executable) and one that stalled each get their own message. Council members who are out of credits sit out with a single note; the "all agents are out of credits" message appears only when every candidate genuinely is, and only then does a chat wait for the earliest reset. Launch failures and stalls are never retried on a credit-reset timer; fix the agent in Config → Agents (Test) or pick another one.
+- **Usage figures are labelled honestly.** Expired limit windows are ignored and displayed percentages are capped at 100% (an active over-limit window still counts as exhausted). Missing data shows as **usage unknown**, never as zero. Copilot figures come from its latest recorded session only, with when they were recorded; account allowances and billing-period totals are not known to Conclave.
 - Shared memories, project navigation, config diffs/backups, notifications, Markdown export and keyboard shortcuts.
 
 ## Local data and access
@@ -81,9 +84,13 @@ node scripts/test-plans.mjs
 node scripts/test-mcp.mjs
 ```
 
-The default tests use temporary databases, fake agents and local processes; they do not call paid agents. Coverage includes plan parsing/path boundaries, dependencies, balancing, cancellation, question routing, session/writer locks, failover, runner lifecycle/SSE, config editing, and diff/revert.
+The default tests use temporary databases, fake agents and local processes; they do not call paid agents. Coverage includes plan parsing/path boundaries, dependencies, balancing, cancellation, question routing, session/writer locks, failover and failure classification, guarded restart recovery, usage-window and telemetry handling, configured-agent launch and prompt transport, runner lifecycle/SSE, config editing, and diff/revert.
 
-Browser checks are separate: `scripts/check-ui.mjs` accepts an isolated preview URL and a synthetic thread ID. `scripts/seed-demo.mjs` can create that fixture only when an isolated `AGENT_HUB_DB` and `AGENT_HUB_DATA_DIR` are set. Never capture real chats for public screenshots.
+Browser checks are separate: `scripts/check-ui.mjs` accepts an isolated preview URL and a synthetic thread ID (`node scripts/check-ui.mjs --isolated` runs the phone, landscape, reduced-height and desktop matrix in both themes with stubbed requests and no agent calls). `scripts/seed-demo.mjs` can create that fixture only when an isolated `AGENT_HUB_DB` and `AGENT_HUB_DATA_DIR` are set. Never capture real chats for public screenshots.
+
+These checks emulate phone sizes in a desktop browser. **Physical devices have not been tested:** real iOS/Android software keyboards, browser chrome, safe-area insets and touch input may behave differently. Reports from real phones are welcome.
+
+A CI workflow (`.github/workflows/checks.yml`: `npm ci`, `npm test`, `npm run scan:staged` on Windows) is prepared but is only published when the pushing credential has GitHub's `workflow` scope. If the repository has no `.github/workflows/` folder, run those checks locally before contributing.
 
 `npm run test:live` is an explicit opt-in that calls your configured agents and can consume credits. The other historical live scripts in `scripts/` also require configured agents/a running server; they are not part of `npm test`.
 

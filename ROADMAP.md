@@ -23,6 +23,10 @@
 - **Direct terminal access** for all agents (default), Codex MCP auto-approval, **stall watchdog** with hand-over
 - **Live animations** (thinking / writing / running a command), **message queue + Send now**, **full-screen / collapsible chat list**
 - **Out-of-credits failover**: detect quota errors, try Antigravity's other quota bucket, hand the turn to the next agent, skip exhausted council members, and when everyone is out wait and resume after the earliest reset
+- **Failure kinds kept apart**: out of credits, failed to start and stalled each get their own message; only a genuinely exhausted team waits for a reset, and a council member's turn never claims the whole team is out
+- **Guarded restart recovery**: completed steps keep their checkpoint; a build step interrupted mid-edit waits for Retry or Skip; plans auto-resume only in Auto mode with write access when it is safe, re-checked at resume time
+- **Honest usage labels**: expired windows ignored, percentages capped at 100%, "usage unknown" instead of zero, Copilot shown as latest-session usage
+- **Mobile layout**: chat drawer, ⋯ actions menu, composer and conversation sized for phone, landscape and reduced-height screens, checked by an isolated browser matrix
 
 ## Next (high value, small)
 1. **Approvals for Codex and Antigravity.** Drive `codex app-server` / agy's interactive mode so they can ask too (today only Claude can).
@@ -30,6 +34,8 @@
 3. **Native image forwarding.** Use image inputs directly in every driver that supports them; show compatibility for path-based attachments.
 4. **Custom templates.** Save your own prompts and preferred council settings.
 5. **Pinned context.** Pin memories or files to a chat so every agent always gets them.
+6. **Real-device mobile testing.** Verify software keyboards, browser chrome, safe areas and touch on physical iOS/Android phones; add `visualViewport` handling if they need it.
+7. **Publish CI.** Push the prepared `.github/workflows/checks.yml` once a credential with GitHub's `workflow` scope is available.
 
 ## Later
 - **Plan transaction isolation:** keep build, review and fix on the same isolated worktree; writes are currently serialized but another chat may edit between phases.

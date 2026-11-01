@@ -475,15 +475,24 @@ async function runAgent(thread, tool, opts = {}) {
     outNotes.push(`${member(cand).label} ran out of credits (back ${fmtTime(until)})`);
   }
   if (isCancelled(thread.id)) return null;
-  // Everyone in the fallback order was exhausted or failed.
+  // A scoped turn (one council member, fallback limited to non-members) only
+  // speaks for that member. It must never claim the whole team is out.
+  if (opts.exclude?.length) {
+    addMessage(thread.id, { role: 'system', content: `${member(tool).label} sat out this turn: ${outNotes.join('; ') || 'not available'}.` });
+    return null;
+  }
+  // Everyone in the fallback order was tried. Only a team that is genuinely out
+  // of credits waits for a reset; launch failures and stalls need a person.
   const allExhausted = order.length > 0 && order.every(t => !!outOfCredits(t));
   const soonest = order.map(t => outOfCredits(t)?.until).filter(Boolean).sort((a, b) => a - b)[0];
   const msg = exhaustionSummary(allExhausted, outNotes);
-  if (f.waitForReset && soonest && !opts.exclude?.length) {
+  if (allExhausted && f.waitForReset && soonest) {
     kvSet(`waiting:${thread.id}`, { until: soonest + 60_000, tool, round: opts.round || null });
     addMessage(thread.id, { role: 'system', content: `${msg} I'll continue automatically at ${fmtTime(soonest + 60_000)}. You can also retry now or cancel.` });
-  } else {
+  } else if (allExhausted) {
     addMessage(thread.id, { role: 'system', content: `${msg} Add a local agent (Ollama) in Config → Agents to keep working offline.` });
+  } else {
+    addMessage(thread.id, { role: 'system', content: `${msg} Nothing was retried automatically. Check the failing agents in Config → Agents (Test), or pick another agent and send again.` });
   }
   return null;
 }
@@ -547,21 +556,37 @@ async function runDirect(thread, tools) {
   }
 }
 
+// Council members with credits right now. Exhausted members are skipped with one
+// note instead of a failed turn each round.
+function councilMembers(thread) {
+  const all = activeMembers(thread);
+  const out = all.filter(t => outOfCredits(t));
+  if (out.length) {
+    addMessage(thread.id, { role: 'system', content: `Sitting out this council: ${out.map(t => `${member(t).label} (out of credits until ${fmtTime(outOfCredits(t).until)})`).join(', ')}.` });
+  }
+  return { all, members: all.filter(t => !out.includes(t)) };
+}
+
 async function runCouncil(thread) {
-  const members = activeMembers(thread);
-  if (!members.length) return;
+  const { all, members } = councilMembers(thread);
+  if (!all.length) return;
   const perm = thread.settings.councilPermission;
   const c = running.get(thread.id);
   if (!c || c.cancelled) return;
+  // Nobody on the team has credits: one turn through the normal fallback path,
+  // which reports it once and waits for the earliest reset.
+  if (!members.length) return runAgent(thread, leadOf(thread, all), { permission: perm });
   const names = members.map(t => member(t).label).join(', ');
   await Promise.all(members.map(t => runAgent(thread, t, {
-    round: 'council-1', permission: perm, exclude: members,
+    round: 'council-1', permission: perm, exclude: all,
     instruction: `COUNCIL ROUND 1 (members: ${names}). Give your own independent answer to the user's latest request. You may inspect files, but do not change anything yet. Be specific and concise; the other members will review your answer.`,
   })));
   for (let r = 2; r <= 1 + Number(thread.settings.rounds || 0); r++) {
     if (c.cancelled) return;
-    await Promise.all(members.map(t => runAgent(thread, t, {
-      round: `council-${r}`, permission: perm, exclude: members,
+    const live = members.filter(t => !outOfCredits(t));   // someone may have run out in an earlier round
+    if (!live.length) break;
+    await Promise.all(live.map(t => runAgent(thread, t, {
+      round: `council-${r}`, permission: perm, exclude: all,
       instruction: `COUNCIL ROUND ${r}. Read the other members' latest answers above. Say where you agree, point out mistakes or risks in their answers (or your own), then give your improved answer. Keep it short; do not repeat what everyone already agrees on.`,
     })));
   }
@@ -577,7 +602,9 @@ async function runCouncil(thread) {
 
 // Build & review: the chair builds, everyone else reviews, the chair fixes once.
 async function runBuildReview(thread) {
-  const members = activeMembers(thread);
+  const { all, members: ready } = councilMembers(thread);
+  if (!all.length) return;
+  const members = ready.length ? ready : all;   // if everyone is out, the builder turn reports it and waits
   const builder = members.find(t => roleOf(thread, t) === 'builder' && !outOfCredits(t)) || leadOf(thread, members);
   const checkers = members.filter(t => t !== builder && ['reviewer', 'tester'].includes(roleOf(thread, t)));
   const reviewers = checkers.length ? checkers : members.filter(t => t !== builder);
@@ -593,8 +620,10 @@ async function runBuildReview(thread) {
     instruction: `REVIEW STEP. ${member(builder).label} just made changes for the user's request (summary above). Inspect the actual files/diff in the working folder. List concrete problems (bugs, missed requirements, risks) with file and line where possible. If everything is fine, reply with "LGTM" and one sentence. Do not edit files.`,
   })));
   if (c.cancelled) return;
-  const issues = reviews.filter(r => r && r.status === 'done' && !/^\W*LGTM\b/i.test(r.content.trim()));
-  if (!issues.length) { addMessage(thread.id, { role: 'system', content: 'All reviewers approved the change.' }); return; }
+  const completed = reviews.filter(r => r && r.status === 'done');
+  if (!completed.length) { addMessage(thread.id, { role: 'system', content: 'No reviewer could check this change (all were unavailable or failed). It has not been reviewed.' }); return; }
+  const issues = completed.filter(r => !/^\W*LGTM\b/i.test(r.content.trim()));
+  if (!issues.length) { addMessage(thread.id, { role: 'system', content: completed.length === reviews.length ? 'All reviewers approved the change.' : `${completed.length} of ${reviews.length} reviewers approved the change; the others could not review it.` }); return; }
   await runAgent(thread, builder, {
     round: 'fix',
     instruction: 'FIX STEP. Read the reviews above. Fix the valid problems, explain briefly why you skipped any you disagree with, and summarise the final state.',
@@ -782,17 +811,71 @@ export async function threadFromChat(chat) {
 }
 
 // Mark messages left "running" by a crash or restart as stopped.
-export function recoverStale() {
+// Resuming after a restart is only safe in Auto mode with write access, for a
+// paused plan with no failed build step: Run plan re-queues failed steps, and a
+// failed build may already have half-applied edits.
+function safeToResume(plan, settings) {
+  return plan.status === 'paused'
+    && (settings.approvalMode || 'auto') === 'auto'
+    && settings.permission !== 'read'
+    && !plan.steps.some(s => s.status === 'failed' && s.kind !== 'read');
+}
+let resumeTimersScheduled = 0;
+export const resumeScheduled = () => resumeTimersScheduled;
+export function recoverStale({ autoResume = true, resumeDelayMs = 2000 } = {}) {
   for (const id of [...running.keys()]) stopThread(id);
   running.clear();
   live.clear();
   const db = getDb();
   db.prepare("UPDATE thread_messages SET status = 'stopped', error = 'Hub restarted', finished = COALESCE(finished, ?) WHERE status = 'running'").run(now());
-  // Plans that were mid-run pause; their running steps go back to the queue.
+  // Plans that were mid-run pause. A read-only step that was running is safe to
+  // run again. A build step that was running may have half-applied edits or run
+  // commands we can't verify, so it is marked failed for the user to check
+  // (Retry or Skip) instead of being replayed blindly.
+  const resumable = [];
   for (const p of db.prepare("SELECT * FROM plans WHERE status = 'running'").all().map(planRow)) {
-    p.steps.forEach(s => { if (s.status === 'running') s.status = 'queued'; });
-    db.prepare("UPDATE plans SET status = 'paused', error = 'Conclave restarted', steps = ?, updated = ? WHERE id = ?").run(JSON.stringify(p.steps), now(), p.id);
+    const midEdit = [];
+    for (const s of p.steps) {
+      if (s.status !== 'running') continue;
+      if (s.kind === 'read') { s.status = 'queued'; continue; }
+      s.status = 'failed';
+      s.error = 'Interrupted by a Conclave restart while editing. Check its partial changes, then Retry or Skip.';
+      midEdit.push(s.id);
+    }
+    const error = midEdit.length ? `Conclave restarted while step ${midEdit.join(', ')} was editing. Check it, then Retry or Skip.` : 'Conclave restarted';
+    db.prepare("UPDATE plans SET status = 'paused', error = ?, steps = ?, updated = ? WHERE id = ?").run(error, JSON.stringify(p.steps), now(), p.id);
+    p.status = 'paused';
+    let settings = null;
+    try { settings = getThread(p.thread_id).settings; } catch {}
+    if (!settings) continue;
+    if (midEdit.length) {
+      addMessage(p.thread_id, { role: 'system', content: `Conclave restarted while step ${midEdit.join(', ')} was editing files. It is marked failed so its edits and commands aren't repeated blindly. Check its changes, then Retry or Skip it on the plan board.` });
+    } else if (autoResume && safeToResume(p, settings)) {
+      resumable.push(p);
+    } else {
+      addMessage(p.thread_id, { role: 'system', content: 'Conclave restarted. The plan is paused: check any failed steps, then click Resume on the plan board.' });
+    }
   }
+  // Auto mode, write access, nothing mid-edit and no failed build step: continue.
+  // Everything is checked again when the timer fires, since the chat may have been
+  // deleted, switched to Manual or made read-only in the meantime.
+  for (const p of resumable) {
+    setTimeout(() => {
+      const note = content => { try { addMessage(p.thread_id, { role: 'system', content }); } catch {} };
+      try {
+        const cur = getPlan(p.id);
+        let settings = null;
+        try { settings = getThread(p.thread_id).settings; } catch {}
+        if (!cur || !settings || cur.thread_id !== p.thread_id || running.has(p.thread_id)) return;
+        if (!safeToResume(cur, settings)) { note('Conclave restarted. The plan stays paused: click Resume on the plan board when ready.'); return; }
+        note('Conclave restarted. No step was editing at the time, so the plan resumes automatically.');
+        runPlan(p.thread_id, p.id);
+      } catch (e) {
+        note(`Could not resume the plan automatically: ${e.message}. Click Resume on the plan board.`);
+      }
+    }, resumeDelayMs).unref?.();
+  }
+  resumeTimersScheduled = resumable.length;
   // An agent waiting on ask_user is gone after a restart.
   db.prepare("UPDATE questions SET status = 'expired' WHERE status = 'pending' AND via = 'tool'").run();
 }

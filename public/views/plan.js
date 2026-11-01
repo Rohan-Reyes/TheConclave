@@ -1,5 +1,5 @@
 // Council plan board, questions from agents, and the team (roles + usage) panel.
-import { api, esc, toast, modal, $, $$ } from '../lib.js';
+import { api, esc, ago, toast, modal, $, $$ } from '../lib.js';
 
 const STEP_ICON = { queued: '○', running: '', done: '✓', failed: '✕', waiting: '?', skipped: '⤼' };
 const PLAN_LABEL = { proposed: 'Ready', running: 'Running', paused: 'Paused', done: 'Done', failed: 'Failed', cancelled: 'Cancelled', invalid: 'Unreadable', empty: 'No work needed' };
@@ -96,19 +96,28 @@ export function bindPlanAndQuestions(root, threadId, after) {
 }
 
 // ---------- team: roles + live usage
-export function usageOf(id, limits, credits) {
-  if (credits?.[id]) return { pct: 100, out: true, text: `out until ${new Date(credits[id].until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` };
+const measuredNumber = value => (typeof value === 'number' || typeof value === 'string' && value.trim() !== '') && Number.isFinite(Number(value));
+const currentWindow = (w, now, scale = 1) => w && (!measuredNumber(w.resetsAt) || Number(w.resetsAt) * scale > now);
+export function copilotUsageText(cp) {
+  if (!cp) return 'usage unknown';
+  const parts = [];
+  if (measuredNumber(cp.creditsUsed) && Number(cp.creditsUsed) >= 0) parts.push(`${Number(Number(cp.creditsUsed).toPrecision(6))} credits used`);
+  if (measuredNumber(cp.requests) && Number.isInteger(Number(cp.requests)) && Number(cp.requests) >= 0) parts.push(`${Number(cp.requests)} request${Number(cp.requests) === 1 ? '' : 's'}`);
+  const observed = Date.parse(cp.seen);
+  const freshness = Number.isFinite(observed) ? ` · ${cp.seenSource === 'file' ? 'file updated' : 'recorded'} ${ago(cp.seen)}` : ' · observation time unknown';
+  return `session ${parts.length ? parts.join(' · ') : 'usage unknown'}${freshness}`;
+}
+export function usageOf(id, limits, credits, now = Date.now()) {
+  if (Number(credits?.[id]?.until) > now) return { pct: 100, out: true, text: `out until ${new Date(credits[id].until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` };
   let pct = null;
-  if (id === 'claude' && limits?.claude) pct = Math.max(0, ...Object.values(limits.claude.unifiedWindows || {}).filter(w => w.resetsAt * 1000 > Date.now()).map(w => w.utilization * 100));
-  if (id === 'codex' && limits?.codex) pct = Math.max(0, ...[limits.codex.primary, limits.codex.secondary].filter(Boolean).map(w => w.usedPct));
-  if (id === 'antigravity' && limits?.antigravity) pct = Math.max(0, ...limits.antigravity.groups.flatMap(g => g.windows.map(w => 100 - w.remainingPct)));
-  if (id === 'copilot' && limits?.copilot) {
-    const cp = limits.copilot;
-    return { pct: null, text: `${cp.creditsUsed ?? 0} credits used (${cp.requests || 1} req)` };
-  }
-  if (id === 'copilot') return { pct: null, text: 'ready (0 credits used)' };
+  const max = values => values.length ? Math.max(...values.map(Number)) : null;
+  if (id === 'claude' && limits?.claude) pct = max(Object.values(limits.claude.unifiedWindows || {}).filter(w => currentWindow(w, now, 1000) && measuredNumber(w.utilization)).map(w => w.utilization * 100));
+  if (id === 'codex' && limits?.codex) pct = max([limits.codex.primary, limits.codex.secondary].filter(w => currentWindow(w, now) && measuredNumber(w.usedPct)).map(w => w.usedPct));
+  if (id === 'antigravity' && limits?.antigravity) pct = max((limits.antigravity.groups || []).flatMap(g => (g.windows || []).filter(w => currentWindow(w, now) && measuredNumber(w.remainingPct)).map(w => 100 - w.remainingPct)));
+  if (id === 'copilot') return { pct: null, text: copilotUsageText(limits?.copilot) };
   if (id === 'ollama' || String(id).includes('qwen')) return { pct: null, text: 'local (unlimited)' };
-  return pct == null || !isFinite(pct) ? { pct: null, text: 'limits unknown' } : { pct: Math.round(pct), text: `${Math.round(pct)}% used` };
+  const displayed = Math.round(Math.min(100, Math.max(0, pct)));
+  return pct == null || !isFinite(pct) ? { pct: null, text: 'limits unknown' } : { pct: displayed, text: `${displayed}% used` };
 }
 
 export function teamStripHtml(team, tools, limits, credits, busyIds = new Set()) {

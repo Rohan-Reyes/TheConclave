@@ -16,4 +16,8 @@ coverage/
 artifacts/
 .DS_Store
 .conclave/
-.github/
+# Keep local .github settings private, but track the reviewed CI workflow.
+.github/*
+!.github/workflows/
+.github/workflows/*
+!.github/workflows/checks.yml

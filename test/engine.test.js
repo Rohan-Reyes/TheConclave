@@ -280,7 +280,7 @@ test('interrupted sessions recover cleanly on startup via recoverStale', () => {
   const q=T.createQuestion({threadId:t.id,messageId:mid,planId:p.id,stepId:'1',agent:'ea',question:'Still there?',via:'tool'});
   assert.equal(T.getQuestion(q.id).status,'pending');
 
-  T.recoverStale();
+  T.recoverStale({ autoResume: false });
 
   const recovered=T.getThread(t.id);
   assert.equal(recovered.running,false);
@@ -290,6 +290,126 @@ test('interrupted sessions recover cleanly on startup via recoverStale', () => {
   assert.ok(msg.finished);
   const recPlan=T.getPlan(p.id);
   assert.equal(recPlan.status,'paused');
-  assert.equal(recPlan.steps[0].status,'queued');
+  // A build step that was mid-edit is not replayed blindly: it waits for Retry or Skip.
+  assert.equal(recPlan.steps[0].status,'failed');
+  assert.match(recPlan.steps[0].error,/Interrupted by a Conclave restart/);
+  assert.equal(recPlan.steps[1].status,'queued');
   assert.equal(T.getQuestion(q.id).status,'expired');
+});
+
+test('restart: a plan whose interrupted step was mid-edit stays paused and is not auto-resumed', () => {
+  const t=chat({ approvalMode: 'auto' });
+  const p=plan(t,[{status:'done',assignee:'ea'},{status:'running',assignee:'ea',kind:'build'},{status:'queued'}],'running');
+  T.recoverStale({ autoResume: true, resumeDelayMs: 60_000 });
+  assert.equal(T.resumeScheduled(),0);
+  const rec=T.getPlan(p.id);
+  assert.equal(rec.status,'paused');
+  assert.equal(rec.steps[0].status,'done', 'completed steps keep their checkpoint');
+  assert.equal(rec.steps[1].status,'failed');
+  assert.ok(T.getThread(t.id).messages.some(m=>m.role==='system' && /marked failed so its edits and commands aren't repeated/.test(m.content)));
+});
+
+test('restart: Auto mode with write access resumes a plan when only read-only work was interrupted', async () => {
+  const t=chat({ approvalMode: 'auto', permission: 'edit' });
+  const p=plan(t,[{status:'done',assignee:'ea'},{status:'running',assignee:'ea',kind:'read'}],'running');
+  T.recoverStale({ autoResume: true, resumeDelayMs: 5 });
+  assert.equal(T.resumeScheduled(),1);
+  assert.equal(T.getPlan(p.id).steps[1].status,'queued');
+  for (let i=0;i<300 && T.getPlan(p.id).status!=='done';i++) await new Promise(r=>setTimeout(r,20));
+  await idle(t.id);
+  const done=T.getPlan(p.id);
+  assert.equal(done.status,'done');
+  assert.equal(done.steps[0].attempts,0, 'the finished step was not run again');
+  assert.ok(T.getThread(t.id).messages.some(m=>m.role==='system' && /resumes automatically/.test(m.content)));
+});
+
+test('restart: a plan with an earlier failed build step is not auto-resumed (Run plan would re-queue it)', () => {
+  const t=chat({ approvalMode: 'auto', permission: 'edit' });
+  const p=plan(t,[{status:'failed',assignee:'ea',kind:'build',error:'boom'},{status:'running',assignee:'eb',kind:'read'}],'running');
+  T.recoverStale({ autoResume: true, resumeDelayMs: 60_000 });
+  assert.equal(T.resumeScheduled(),0);
+  const rec=T.getPlan(p.id);
+  assert.equal(rec.status,'paused');
+  assert.equal(rec.steps[0].status,'failed');
+  assert.equal(rec.steps[1].status,'queued');
+});
+
+test('restart: the delayed resume re-checks settings and survives a deleted chat', async () => {
+  // Switched to Manual during the delay: stays paused.
+  const t1=chat({ approvalMode: 'auto', permission: 'edit' });
+  const p1=plan(t1,[{status:'running',assignee:'ea',kind:'read'}],'running');
+  // Deleted during the delay: no uncaught error.
+  const t2=chat({ approvalMode: 'auto', permission: 'edit' });
+  const p2=plan(t2,[{status:'running',assignee:'ea',kind:'read'}],'running');
+  const errors=[];
+  const onErr=e=>errors.push(e);
+  process.on('uncaughtException',onErr);
+  try {
+    T.recoverStale({ autoResume: true, resumeDelayMs: 40 });
+    assert.equal(T.resumeScheduled(),2);
+    T.updateThread(t1.id,{ settings: { approvalMode: 'manual' } });
+    T.deleteThread(t2.id);
+    await new Promise(r=>setTimeout(r,200));
+  } finally { process.off('uncaughtException',onErr); }
+  assert.deepEqual(errors,[]);
+  assert.equal(T.getThread(t1.id).running,false);
+  assert.equal(T.getPlan(p1.id).status,'paused');
+  assert.ok(T.getThread(t1.id).messages.some(m=>m.role==='system' && /stays paused/.test(m.content)));
+  assert.ok(!T.getPlan(p2.id), 'the deleted chat\'s plan is gone and was not resumed');
+});
+
+test('restart: Manual mode and read-only chats never auto-resume', () => {
+  for (const settings of [{ approvalMode: 'manual', permission: 'edit' }, { approvalMode: 'auto', permission: 'read' }]) {
+    const t=chat(settings);
+    const p=plan(t,[{status:'running',assignee:'ea',kind:'read'}],'running');
+    T.recoverStale({ autoResume: true, resumeDelayMs: 60_000 });
+    assert.equal(T.resumeScheduled(),0, JSON.stringify(settings));
+    assert.equal(T.getPlan(p.id).status,'paused');
+  }
+});
+
+test('council: an exhausted member sits out with one note and never triggers the all-agents banner', async () => {
+  F.markExhausted('eb', 'usage limit, try again in 2 hours');
+  try {
+    const t=chat({ members: ['ea','eb'], chair: 'ea', rounds: 1, permission: 'read', fallback: { enabled: true, order: ['ea','eb'], waitForReset: true } });
+    T.updateThread(t.id,{ target: 'council' });
+    await T.sendMessage(t.id,'council-skip-check');
+    const done=await idle(t.id);
+    const sys=done.messages.filter(m=>m.role==='system').map(m=>m.content);
+    assert.equal(sys.filter(s=>/Sitting out this council: eb/.test(s)).length,1, sys.join(' | '));
+    assert.ok(!sys.some(s=>/All agents are out of credits/.test(s)), sys.join(' | '));
+    assert.equal(done.messages.filter(m=>m.role==='agent' && m.tool==='eb').length,0, 'no failed turn for the exhausted member');
+    assert.ok(done.messages.some(m=>m.role==='agent' && m.tool==='ea' && m.status==='done'));
+    assert.equal(T.waitingInfo(t.id),null);
+  } finally { F.clearExhausted('eb'); }
+});
+
+test('failover: a launch failure next to an exhausted agent does not schedule a credit-reset retry', async () => {
+  D.saveAgent({ id: 'nobinary', name: 'nobinary', command: path.join(temp,'does-not-exist.exe'), args: [], input: 'stdin' });
+  F.markExhausted('eb', 'usage limit, try again in 2 hours');
+  try {
+    const t=chat({ fallback: { enabled: true, order: ['nobinary'], waitForReset: true } });
+    T.updateThread(t.id,{ target: 'eb' });
+    await T.sendMessage(t.id,'mixed-failure-check');
+    const done=await idle(t.id);
+    const sys=done.messages.filter(m=>m.role==='system').map(m=>m.content).join(' | ');
+    assert.equal(T.waitingInfo(t.id),null, sys);
+    assert.doesNotMatch(sys,/All agents are out of credits/);
+    assert.match(sys,/Nothing was retried automatically/);
+  } finally { F.clearExhausted('eb'); D.deleteAgent('nobinary'); }
+});
+
+test('failover: when every candidate is genuinely out of credits the chat waits for the earliest reset', async () => {
+  F.markExhausted('ea', 'usage limit, try again in 3 hours');
+  F.markExhausted('eb', 'usage limit, try again in 2 hours');
+  try {
+    const t=chat({ fallback: { enabled: true, order: ['eb'], waitForReset: true } });
+    await T.sendMessage(t.id,'all-out-check');
+    const done=await idle(t.id);
+    const w=T.waitingInfo(t.id);
+    assert.ok(w, done.messages.map(m=>m.content).join(' | '));
+    assert.ok(Math.abs(w.until-(F.outOfCredits('eb').until+60_000))<1000, 'waits for the earliest reset');
+    assert.ok(done.messages.some(m=>m.role==='system' && /All agents are out of credits/.test(m.content)));
+    T.cancelWaiting(t.id);
+  } finally { F.clearExhausted('ea'); F.clearExhausted('eb'); }
 });

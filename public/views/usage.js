@@ -1,4 +1,5 @@
 import { api, esc, badge, ago, toast, $, $$ } from '../lib.js';
+import { copilotUsageText } from './plan.js';
 
 const SERIES = [
   { id: 'claude', label: 'Claude Code', v: '--s-claude' },
@@ -86,10 +87,8 @@ export async function renderUsage(view, params) {
     drawLimits(...await loadLimits());
   };
   $('#agy-refresh').onclick = refreshAgy;
-  loadLimits().then(([l, cr]) => {
-    drawLimits(l, cr);
-    const stale = !l.antigravity || Date.now() - new Date(l.antigravity.seen) > 15 * 60_000;
-    if (stale && !location.search.includes('snap')) refreshAgy();
+  loadLimits().then(([l, cr, members]) => {
+    drawLimits(l, cr, members);
   });
   drawChart(u.history, days);
   $('#as-table').onclick = () => {
@@ -161,17 +160,21 @@ function drawChart(rows, days) {
 }
 
 // One meter per limit window. "used" is shown for every tool so they compare directly.
-const meter = (label, usedPct, note) => `
+export const meter = (label, usedPct, note) => {
+  if (!(typeof usedPct === 'number' || typeof usedPct === 'string' && usedPct.trim() !== '') || !Number.isFinite(Number(usedPct))) return `<div class="tiny muted">${esc(label)} usage unknown</div>`;
+  usedPct = Math.min(100, Math.max(0, Number(usedPct)));
+  return `
   <div class="meter-row"><span class="tiny">${esc(label)}</span>
     <div class="meter ${usedPct >= 90 ? 'hot' : usedPct >= 70 ? 'warm' : ''}" role="meter" aria-label="${esc(label)} used" aria-valuenow="${Math.round(usedPct)}" aria-valuemin="0" aria-valuemax="100"><i style="width:${Math.min(100, Math.max(0, usedPct))}%"></i></div>
     <b class="small">${Math.round(usedPct)}%</b></div>
   ${note ? `<div class="tiny muted" style="margin:-2px 0 4px 60px">${esc(note)}</div>` : ''}`;
+};
 const until = ms => { if (!ms) return ''; const m = Math.max(0, Math.round((ms - Date.now()) / 60000)); return m >= 1440 ? `resets in ${Math.floor(m / 1440)}d ${Math.floor(m % 1440 / 60)}h` : `resets in ${Math.floor(m / 60)}h ${m % 60}m`; };
 
-const loadLimits = () => Promise.all([api('/api/limits'), api('/api/credits').catch(() => ({}))]);
-const outNote = (cr, tool) => cr?.[tool] ? `<div class="out-note">⏸ Out of credits until ${new Date(cr[tool].until).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}. Turns go to the next agent. <button class="small" data-clear="${tool}">Mark available</button></div>` : '';
+const loadLimits = () => Promise.all([api('/api/limits'), api('/api/credits').catch(() => ({})), api('/api/members').catch(() => [])]);
+const outNote = (cr, tool, now) => Number(cr?.[tool]?.until) > now ? `<div class="out-note">⏸ Out of credits until ${new Date(cr[tool].until).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}. Turns go to the next agent. <button class="small" data-clear="${tool}">Mark available</button></div>` : '';
 
-function drawLimits(l, cr = {}) {
+function drawLimits(l, cr = {}, members = []) {
   const box = $('#limits'); if (!box) return;
   if (!box.dataset.bound) {
     box.dataset.bound = 1;
@@ -181,27 +184,30 @@ function drawLimits(l, cr = {}) {
       toast('Marked as available'); drawLimits(...await loadLimits());
     });
   }
+  box.innerHTML = renderLimitCards(l, cr, Date.now(), members);
+}
+
+export function renderLimitCards(l, cr = {}, now = Date.now(), members = []) {
+  const active = (w, scale = 1) => w && (w.resetsAt === null || w.resetsAt === undefined || Number(w.resetsAt) * scale > now);
   const cards = [];
   const c = l.claude, w = c?.unifiedWindows || {};
-  cards.push(`<div class="panel pad limit-card"><h3>${badge('claude')}<span class="tiny muted">${c ? 'seen ' + ago(c.seen) : ''}</span></h3>${outNote(cr, 'claude')}
-    ${c ? [['five_hour', '5-hour'], ['seven_day', 'Weekly']].filter(([k]) => w[k]).map(([k, lab]) => meter(lab, w[k].utilization * 100, until(w[k].resetsAt * 1000))).join('') || `<b>${esc(c.status)}</b>`
+  cards.push(`<div class="panel pad limit-card"><h3>${badge('claude')}<span class="tiny muted">${c ? 'seen ' + ago(c.seen) : ''}</span></h3>${outNote(cr, 'claude', now)}
+    ${c ? [['five_hour', '5-hour'], ['seven_day', 'Weekly']].filter(([k]) => active(w[k], 1000)).map(([k, lab]) => meter(lab, w[k].utilization * 100, until(w[k].resetsAt * 1000))).join('') || '<div class="tiny muted">No current limit window. Refresh usage after the next run.</div>'
       : '<div class="small muted">Appears after Claude runs once in Conclave.</div>'}</div>`);
   const a = l.antigravity;
-  cards.push(`<div class="panel pad limit-card"><h3>${badge('antigravity')}<span class="tiny muted">${l.antigravityRefreshing ? 'refreshing…' : a ? 'seen ' + ago(a.seen) : ''}</span></h3>${outNote(cr, 'antigravity')}
+  cards.push(`<div class="panel pad limit-card"><h3>${badge('antigravity')}<span class="tiny muted">${l.antigravityRefreshing ? 'refreshing…' : a ? 'seen ' + ago(a.seen) : ''}</span></h3>${outNote(cr, 'antigravity', now)}
     ${a ? a.groups.map(g => `<div class="tiny" style="font-weight:600;margin-top:4px">${esc(g.name)} <span class="muted" style="font-weight:400">${esc(g.models)}</span></div>
-      ${g.windows.map(x => meter(x.window === 'weekly' ? 'Weekly' : '5-hour', 100 - x.remainingPct, x.refresh ? `refreshes in ${x.refresh}` : '')).join('')}`).join('')
+      ${g.windows.filter(x => active(x)).map(x => meter(x.window === 'weekly' ? 'Weekly' : '5-hour', 100 - x.remainingPct, x.resetsAt ? until(x.resetsAt) : x.refresh ? `refreshes in ${x.refresh}` : '')).join('')}`).join('')
       : '<div class="small muted">Not read yet. Click Refresh to read agy /usage.</div>'}</div>`);
   const x = l.codex;
   const lab = w2 => w2.windowMin >= 10000 ? 'Weekly' : w2.windowMin >= 280 ? '5-hour' : `${w2.windowMin}m`;
-  cards.push(`<div class="panel pad limit-card"><h3>${badge('codex')}<span class="tiny muted">${x ? 'seen ' + ago(x.seen) : ''}</span></h3>${outNote(cr, 'codex')}
-    ${x ? [x.primary, x.secondary].filter(Boolean).map(w2 => meter(lab(w2), w2.usedPct, until(w2.resetsAt))).join('')
+  cards.push(`<div class="panel pad limit-card"><h3>${badge('codex')}<span class="tiny muted">${x ? 'seen ' + ago(x.seen) : ''}</span></h3>${outNote(cr, 'codex', now)}
+    ${x ? [x.primary, x.secondary].filter(w2 => active(w2)).map(w2 => meter(lab(w2), w2.usedPct, until(w2.resetsAt))).join('') || '<div class="tiny muted">No current limit window. Refresh usage after the next run.</div>'
       : '<div class="small muted">Appears after Codex runs once.</div>'}</div>`);
-    const cp = l.copilot;
-  if (cp) {
-    cards.push(`<div class="panel pad limit-card"><h3>${badge('copilot')}<span class="tiny muted">${'seen ' + ago(cp.seen)}</span></h3>${outNote(cr, 'copilot')}
-      <div class="meter-row"><span class="tiny">Credits</span><b class="small">${cp.creditsUsed} used</b></div>
-      <div class="tiny muted" style="margin-top:4px">${cp.requests} request${cp.requests === 1 ? '' : 's'}${cp.tokens?.input ? ` · ${fmt(cp.tokens.input.tokenCount || 0)} in · ${fmt(cp.tokens.output?.tokenCount || 0)} out` : ''}</div>
-    </div>`);
-  }
-  box.innerHTML = cards.join('');
+  if (l.copilot || members.some(m => (typeof m === 'string' ? m : m.id) === 'copilot')) cards.push(`<div class="panel pad limit-card"><h3>${badge('copilot')}</h3>${outNote(cr, 'copilot', now)}
+    <div class="small">${esc(copilotUsageText(l.copilot))}</div>
+    ${l.copilot?.tokens ? `<div class="tiny muted">${['input', 'output'].filter(key => Number.isFinite(l.copilot.tokens[key]?.tokenCount)).map(key => `${fmt(l.copilot.tokens[key].tokenCount)} ${key} tokens`).join(' · ')}</div>` : ''}
+    <div class="tiny muted" style="margin-top:4px">Latest recorded session only; account allowance and billing-period totals are unknown.</div>
+  </div>`);
+  return cards.join('');
 }

@@ -26,3 +26,12 @@ test('Antigravity quota fallback switches model buckets', () => {
   assert.match(F.otherAgyBucket('Claude Sonnet'), /Gemini/);
   assert.match(F.otherAgyBucket('GPT'), /Gemini/);
 });
+test('failure classes stay separate: launch errors are never quota, and only a fully exhausted team is called "all out"', () => {
+  for (const message of ['Could not start copilot: spawn copilot ENOENT', 'spawn C:\missing\agent.exe ENOENT']) {
+    assert.equal(F.isLaunchError(message), true, message);
+    assert.equal(F.isQuotaError(message), false, message);
+  }
+  assert.equal(F.isLaunchError('usage limit reached'), false);
+  assert.match(F.exhaustionSummary(true, ['a is out']), /All agents are out of credits/);
+  assert.doesNotMatch(F.exhaustionSummary(false, ['b failed to start']), /All agents are out of credits/);
+});

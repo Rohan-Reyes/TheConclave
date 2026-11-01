@@ -298,6 +298,16 @@ async function renderThread(box, id, list, onListChanged) {
         <button id="settings" class="icon-btn" title="Chat settings"><svg class="ic" style="color:inherit"><use href="#i-gear"/></svg></button>
         <button id="focus" class="icon-btn" title="Full screen (Ctrl+Shift+F)">⤢</button>
         <button id="del" class="icon-btn danger" title="Delete this chat (each tool keeps its own session)">✕</button>
+        <details id="hub-more-actions" class="hub-more-actions">
+          <summary class="icon-btn" title="More actions">⋯</summary>
+          <div class="hub-more-dropdown">
+            <button id="m-btn-pin" class="menu-item" type="button">${isPinned ? '📌 Unpin chat' : '📍 Pin chat'}</button>
+            <button id="m-btn-archive" class="menu-item" type="button">${isArchived ? '📦 Unarchive' : '🗄 Archive'}</button>
+            <a id="m-btn-export" class="menu-item" href="/api/threads/${id}/export" download>⇩ Export Markdown</a>
+            <button id="m-btn-focus" class="menu-item" type="button">⤢ Full screen</button>
+            <button id="m-btn-del" class="menu-item danger" type="button">✕ Delete chat</button>
+          </div>
+        </details>
       </div>
     </div>
     <div id="onboarding-container"></div>
@@ -408,17 +418,42 @@ async function renderThread(box, id, list, onListChanged) {
     });
   }
 
-  // Pin & Archive buttons
+  // Mobile actions menu & Pin/Archive toggles
   $('#btn-mobile-chats')?.addEventListener('click', () => document.body.classList.toggle('mobile-list-open'));
   $('#m-btn-pin')?.addEventListener('click', () => { $('#btn-pin')?.click(); $('#hub-more-actions')?.removeAttribute('open'); });
   $('#m-btn-archive')?.addEventListener('click', () => { $('#btn-archive')?.click(); $('#hub-more-actions')?.removeAttribute('open'); });
+  $('#m-btn-export')?.addEventListener('click', () => $('#hub-more-actions')?.removeAttribute('open'));
   $('#m-btn-focus')?.addEventListener('click', () => { $('#focus')?.click(); $('#hub-more-actions')?.removeAttribute('open'); });
-  $('#m-btn-del')?.addEventListener('click', () => { $('#del')?.click(); $('#hub-more-actions')?.removeAttribute('open'); });
+  const mDel = $('#m-btn-del');
+  if (mDel) {
+    mDel.onclick = async e => {
+      e.stopPropagation();
+      if (!mDel.dataset.armed) {
+        mDel.dataset.armed = '1';
+        mDel.textContent = 'Confirm delete?';
+        setTimeout(() => { if (mDel) { mDel.dataset.armed = ''; mDel.textContent = '✕ Delete chat'; } }, 3000);
+        return;
+      }
+      $('#hub-more-actions')?.removeAttribute('open');
+      await api('/api/threads/' + id, { method: 'DELETE' });
+      store.del(draftKey);
+      location.hash = '#/hub';
+    };
+  }
+  document.addEventListener('click', e => {
+    const more = $('#hub-more-actions');
+    if (more && more.hasAttribute('open') && !more.contains(e.target)) {
+      more.removeAttribute('open');
+    }
+  });
+
   $('#btn-pin').onclick = async () => {
     const cur = !!t.settings?.pinned;
     t = await api('/api/threads/' + id, { method: 'PATCH', body: { settings: { pinned: !cur } } });
     $('#btn-pin').className = `icon-btn ${t.settings.pinned ? 'active' : ''}`;
     $('#btn-pin').textContent = t.settings.pinned ? '📌' : '📍';
+    const mPin = $('#m-btn-pin');
+    if (mPin) mPin.textContent = t.settings.pinned ? '📌 Unpin chat' : '📍 Pin chat';
     toast(t.settings.pinned ? 'Chat pinned to top' : 'Chat unpinned');
     onListChanged?.();
   };
@@ -428,6 +463,8 @@ async function renderThread(box, id, list, onListChanged) {
     t = await api('/api/threads/' + id, { method: 'PATCH', body: { settings: { archived: !cur } } });
     $('#btn-archive').className = `icon-btn ${t.settings.archived ? 'active' : ''}`;
     $('#btn-archive').textContent = t.settings.archived ? '📦' : '🗄';
+    const mArc = $('#m-btn-archive');
+    if (mArc) mArc.textContent = t.settings.archived ? '📦 Unarchive' : '🗄 Archive';
     toast(t.settings.archived ? 'Chat archived' : 'Chat restored from archive');
     onListChanged?.();
   };
