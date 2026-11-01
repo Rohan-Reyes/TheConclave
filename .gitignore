@@ -16,3 +16,4 @@ coverage/
 artifacts/
 .DS_Store
 .conclave/
+.github/
