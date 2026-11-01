@@ -1,7 +1,7 @@
 :root {
   --bg: #f6f5f2; --panel: #ffffff; --panel-2: #f0eee9; --line: #e2dfd8;
   --text: #1d1c1a; --muted: #6f6b63; --accent: #2f6fdf; --danger: #c43d2f; --ok: #1f8a4c;
-  --claude: #d97757; --antigravity: #4285f4; --codex: #10a37f; --hub: #8a63d2;
+  --claude: #d97757; --antigravity: #4285f4; --codex: #10a37f; --hub: #8a63d2; --qwen: #6366f1; --ollama: #6366f1;
   --s-claude: #d97757; --s-antigravity: #4285f4; --s-codex: #10a37f;
   --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
   --radius: 10px;
@@ -174,7 +174,7 @@ body.is-hub main { max-width: none; padding: 0; height: 100vh; overflow: hidden;
 .hub-thread:hover { background: var(--panel-2); text-decoration: none; }
 .hub-thread.on { background: var(--panel-2); box-shadow: inset 3px 0 var(--accent); }
 .tgt { font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 5px; color: #fff; background: var(--muted); align-self: start; margin-top: 2px; }
-.tgt.claude { background: var(--claude); } .tgt.antigravity { background: var(--antigravity); } .tgt.codex { background: var(--codex); } .tgt.council { background: var(--hub); }
+.tgt.claude { background: var(--claude); } .tgt.antigravity { background: var(--antigravity); } .tgt.codex { background: var(--codex); } .tgt.council { background: var(--hub); } .tgt.qwen, .tgt.ollama { background: var(--qwen); }
 .hub-main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
 .hub-head { display: flex; gap: 12px; align-items: flex-start; padding: 14px 22px 10px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .title-input { font-size: 17px; font-weight: 600; border: 1px solid transparent; background: transparent; padding: 2px 6px; margin-left: -6px; width: 100%; }
@@ -203,10 +203,6 @@ body.is-hub main { max-width: none; padding: 0; height: 100vh; overflow: hidden;
 .typing i:nth-child(2) { animation-delay: .2s; } .typing i:nth-child(3) { animation-delay: .4s; }
 @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
 @media (max-width: 860px) {
-  body.is-hub main { height: auto; overflow: visible; }
-  .cv-layout { grid-template-columns: 1fr; height: auto; }
-  .hub-list { max-height: 30vh; border-width: 0 0 1px; }
-  .hub-main { height: calc(100vh - 60px); }
   .hm.user, .hm.system { max-width: 100%; }
 }
 
@@ -326,6 +322,7 @@ body.focus-mode #focus { background: var(--accent); color: #fff; border-color: t
 .av.claude, .mate.claude .av { background: var(--claude); }
 .av.antigravity, .mate.antigravity .av { background: var(--antigravity); }
 .av.codex, .mate.codex .av { background: var(--codex); }
+.av.qwen, .mate.qwen .av, .av.ollama, .mate.ollama .av { background: var(--qwen); }
 .mini-meter { width: 34px; height: 4px; border-radius: 99px; background: var(--line); overflow: hidden; display: inline-block; }
 .mini-meter.wide { width: 90px; }
 .mini-meter i { display: block; height: 100%; background: var(--ok); }
@@ -407,10 +404,13 @@ ol.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition: none !important; }
 }
+.hub-head .team-strip { margin-left: auto; max-width: none; flex-wrap: nowrap; }
+.hub-head .cwd-input { min-width: 120px; }
+
 @media (max-width: 860px) {
   .team-strip { max-width: 100%; justify-content: flex-start; }
   .hub-head { flex-wrap: wrap; }
+  .hub-head .team-strip { margin-left: 0; max-width: 100%; flex-wrap: wrap; }
+  .hub-head .cwd-input { min-width: 80px; max-width: 160px; }
   .team-row { grid-template-columns: 1fr 1fr; }
 }
-.hub-head .team-strip { margin-left: auto; max-width: none; flex-wrap: nowrap; }
-.hub-head .cwd-input { min-width: 120px; }

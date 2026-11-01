@@ -13,12 +13,26 @@ const BUILTIN = {
   codex: { label: 'Codex', short: 'Codex', mention: ['codex'], builtin: true },
 };
 
-// All members: the three built-ins plus enabled custom agents.
+// Presets for other agent CLIs. "check" is the executable looked up on PATH.
+const WELL_KNOWN_EXES = {
+  ollama: [
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Ollama', 'ollama.exe'),
+    path.join(process.env.ProgramFiles || '', 'Ollama', 'ollama.exe'),
+  ],
+};
+
 export function members() {
   const out = { ...BUILTIN };
   for (const a of listAgents()) {
     if (!a.enabled || out[a.id]) continue;
-    out[a.id] = { label: a.name, short: a.name, mention: [a.id], builtin: false, agent: a };
+    const mentions = new Set([a.id, a.id.replace(/[-_.]/g, '')]);
+    if (a.id.includes('qwen') || (Array.isArray(a.args) && a.args.some(x => String(x).includes('qwen')))) {
+      mentions.add('qwen'); mentions.add('qwen3.8'); mentions.add('qwen38');
+    }
+    if (a.id.includes('ollama') || String(a.command).includes('ollama')) {
+      mentions.add('ollama');
+    }
+    out[a.id] = { label: a.name, short: a.name, mention: [...mentions], builtin: false, agent: a };
   }
   return out;
 }
@@ -47,7 +61,7 @@ export function deleteAgent(id) { getDb().prepare('DELETE FROM agents WHERE id =
 // Presets for other agent CLIs. "check" is the executable looked up on PATH.
 export const PRESETS = [
   { id: 'gemini', name: 'Gemini CLI', check: 'gemini', command: 'gemini', args: ['-p', 'Answer the conversation above.', '-o', 'text', '--approval-mode', 'plan', '--skip-trust'], input: 'stdin', note: 'Needs a Gemini API key (GEMINI_API_KEY); free Code Assist logins now redirect to Antigravity.' },
-  { id: 'ollama', name: 'Ollama (local)', check: 'ollama', command: 'ollama', args: ['run', 'llama3.2'], input: 'stdin', note: 'Runs a local model offline. Change the model name in the arguments.' },
+  { id: 'ollama', name: 'Ollama (qwen3.8)', check: 'ollama', command: 'ollama', args: ['run', 'qwen3.8', '--nowordwrap'], input: 'stdin', note: 'Runs local Qwen 3.8 offline with Ollama.' },
   { id: 'aider', name: 'Aider', check: 'aider', command: 'aider', args: ['--message', '{prompt}', '--yes-always', '--no-pretty', '--no-stream'], input: 'arg', note: 'Edits files in the working folder; uses your configured model keys.' },
   { id: 'opencode', name: 'OpenCode', check: 'opencode', command: 'opencode', args: ['run', '{prompt}'], input: 'arg', note: '' },
   { id: 'copilot', name: 'GitHub Copilot CLI', check: 'copilot', command: 'copilot', args: ['-p', '{prompt}', '--allow-all-tools'], input: 'arg', note: 'Allows all tools: it can run commands.' },
@@ -59,8 +73,13 @@ export const PRESETS = [
 export function whichAll(names) {
   const out = {};
   for (const n of names) {
-    try { out[n] = execFileSync('where', [n], { encoding: 'utf8', windowsHide: true, timeout: 5000 }).split(/\r?\n/).filter(Boolean)[0] || null; }
-    catch { out[n] = null; }
+    let hit = null;
+    try { hit = execFileSync('where', [n], { encoding: 'utf8', windowsHide: true, timeout: 5000, stdio: ['pipe', 'pipe', 'ignore'] }).split(/\r?\n/).filter(Boolean)[0] || null; }
+    catch { hit = null; }
+    if (!hit && WELL_KNOWN_EXES[n]) {
+      hit = WELL_KNOWN_EXES[n].find(p => p && fs.existsSync(p)) || null;
+    }
+    out[n] = hit;
   }
   return out;
 }
@@ -72,10 +91,15 @@ export function detectPresets() {
 
 // Windows npm shims (.cmd) can't be spawned without a shell. Run their JS
 // entry with node instead, so prompts never pass through cmd.exe.
-function resolveCommand(cmd) {
+export function resolveCommand(cmd) {
   if (process.platform !== 'win32' || /[\\/]/.test(cmd) && fs.existsSync(cmd)) return { file: cmd, pre: [] };
+  const baseName = path.basename(cmd, '.exe').toLowerCase();
+  if (WELL_KNOWN_EXES[baseName]) {
+    const known = WELL_KNOWN_EXES[baseName].find(p => p && fs.existsSync(p));
+    if (known) return { file: known, pre: [] };
+  }
   let hits = [];
-  try { hits = execFileSync('where', [cmd], { encoding: 'utf8', windowsHide: true, timeout: 5000 }).split(/\r?\n/).filter(Boolean); } catch {}
+  try { hits = execFileSync('where', [cmd], { encoding: 'utf8', windowsHide: true, timeout: 5000, stdio: ['pipe', 'pipe', 'ignore'] }).split(/\r?\n/).filter(Boolean); } catch {}
   const exe = hits.find(h => /\.exe$/i.test(h));
   if (exe) return { file: exe, pre: [] };
   const shim = hits.find(h => /\.cmd$/i.test(h));
@@ -85,6 +109,20 @@ function resolveCommand(cmd) {
     if (m) return { file: process.execPath, pre: [path.join(path.dirname(shim), m[1])] };
   }
   return { file: cmd, pre: [] };
+}
+
+export function isAgentAvailable(tool) {
+  if (tool === 'claude' || tool === 'codex' || tool === 'antigravity') return true;
+  const m = member(tool);
+  const a = m?.agent;
+  if (!a) return false;
+  if (process.platform === 'win32') {
+    const res = resolveCommand(a.command);
+    if (res.file && (fs.existsSync(res.file) || res.file === process.execPath)) return true;
+    const hit = whichAll([a.command])[a.command];
+    return !!hit;
+  }
+  return true;
 }
 
 // Permission levels shared by the built-in tools.

@@ -1,15 +1,39 @@
 // Browser smoke checks against an ISOLATED preview server with synthetic data.
-// Usage: node scripts/check-ui.mjs http://127.0.0.1:4788 <thread-id> [screenshot-dir]
+// Usage: node scripts/check-ui.mjs --isolated
+//    or: node scripts/check-ui.mjs http://127.0.0.1:4788 <thread-id> [screenshot-dir]
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-const base = process.argv[2] || 'http://127.0.0.1:4788';
-const threadId = process.argv[3];
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const isIsolated = process.argv.includes('--isolated');
+
+let base = process.argv[2] && !process.argv[2].startsWith('--') ? process.argv[2] : 'http://127.0.0.1:4788';
+let threadId = process.argv[3] && !process.argv[3].startsWith('--') ? process.argv[3] : null;
+let out = path.resolve(process.argv[4] || (isIsolated ? 'docs/screenshots' : 'artifacts/ui'));
+
+let isoServer, isoTmp;
+if (isIsolated) {
+  isoTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'conclave-iso-'));
+  const dbPath = path.join(isoTmp, 'test.db');
+  const env = { ...process.env, AGENT_HUB_DATA_DIR: isoTmp, AGENT_HUB_DB: dbPath, CONCLAVE_PORT: '4788' };
+  threadId = execFileSync('node', ['scripts/seed-demo.mjs'], { env, encoding: 'utf8', cwd: root }).trim();
+  isoServer = spawn('node', ['server.js'], { env, cwd: root, stdio: 'ignore', windowsHide: true });
+  base = 'http://127.0.0.1:4788';
+  out = path.join(root, 'docs', 'screenshots');
+  for (let i = 0; i < 40; i++) {
+    try {
+      const res = await fetch(`${base}/api/stats`, { headers: { Host: '127.0.0.1:4788' } });
+      if (res.ok) break;
+    } catch {}
+    await new Promise(r => setTimeout(r, 100));
+  }
+}
+
 if (!threadId) throw new Error('Supply a synthetic preview thread ID; do not capture private chats.');
-const out = path.resolve(process.argv[4] || 'artifacts/ui');
 fs.mkdirSync(out, { recursive: true });
 const browser = [process.env.CONCLAVE_BROWSER,
   path.join(process.env['ProgramFiles(x86)'] || '', 'Microsoft/Edge/Application/msedge.exe'),
@@ -95,7 +119,13 @@ try {
   ws?.close();
   if (process.platform === 'win32') { try { execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch {} }
   else child.kill();
+  if (isoServer) {
+    if (process.platform === 'win32') { try { execFileSync('taskkill', ['/PID', String(isoServer.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch {} }
+    else isoServer.kill();
+  }
   await delay(250);
-  try { fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
-  catch { console.warn('Browser profile is still locked; temporary profile:', profile); }
+  try { fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {}
+  if (isoTmp) {
+    try { fs.rmSync(isoTmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {}
+  }
 }

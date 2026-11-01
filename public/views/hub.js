@@ -105,6 +105,7 @@ export async function renderHub(view, params, threadId) {
             <button class="small icon-btn" id="newfolder" title="New chat in a project folder"><svg class="ic" style="color:inherit"><use href="#i-folder"/></svg></button>
             <button class="small primary" id="newchat" title="New quick chat (no folder needed)">＋ New</button>
             <button class="small icon-btn" id="collapse" title="Hide chat list (Ctrl+B)">«</button>
+            <button class="small icon-btn mobile-close-list" id="close-mobile-list" title="Close chat list">✕</button>
           </div></div>
         ${list.length > 5 ? '<input type="search" class="hub-search" id="tsearch" placeholder="Filter chats…">' : ''}
         <div id="threads"></div>
@@ -165,6 +166,8 @@ export async function renderHub(view, params, threadId) {
   const toggleList = () => { store.set('cv-list', document.body.classList.contains('list-collapsed') ? 'open' : 'collapsed'); applyLayout(); };
   $('#collapse').onclick = toggleList;
   $('#expand').onclick = toggleList;
+  $('#close-mobile-list')?.addEventListener('click', () => document.body.classList.remove('mobile-list-open'));
+  $('#threads')?.addEventListener('click', e => { if (e.target.closest('a.hub-thread')) document.body.classList.remove('mobile-list-open'); });
   window.__cvToggleList = toggleList;
 
   if (!threadId) return renderWelcome($('#main'), params);
@@ -176,6 +179,7 @@ export async function renderHub(view, params, threadId) {
 function renderWelcome(box, params) {
   const draftKey = 'conclave:draft:welcome';
   box.innerHTML = `<div class="hub-welcome">
+    <button type="button" class="mobile-chats-btn" id="welcome-show-chats" style="margin-bottom:12px">← View chat history</button>
     <h1>Your AI coding council</h1>
     <p class="muted">Talk to Claude Code, Antigravity or Codex in one chat. Switch between them any time without losing context, or ask all three at once and let them debate or build and review together.</p>
     <div class="grid" style="margin:18px 0">
@@ -212,6 +216,7 @@ function renderWelcome(box, params) {
     qInput.focus();
   });
   $('#nc2').onclick = () => newChatDialog(params.get('cwd'));
+  $('#welcome-show-chats')?.addEventListener('click', () => document.body.classList.add('mobile-list-open'));
 
   const go = () => {
     const v = qInput.value.trim();
@@ -272,12 +277,13 @@ async function renderThread(box, id, list, onListChanged) {
 
   box.innerHTML = `
     <div class="hub-head">
-      <div style="min-width:0;flex:1">
-        <div class="row" style="align-items:center;gap:6px">
+      <div class="hub-head-info" style="min-width:0;flex:1">
+        <div class="row hub-head-row1" style="align-items:center;gap:6px">
+          <button type="button" class="mobile-chats-btn" id="btn-mobile-chats" title="View all chats">← Chats</button>
           <input class="title-input" id="title" value="${esc(t.title)}" aria-label="Chat title">
           <span class="reconnect-pill connected" id="reconnect-pill" title="Connection status"><i class="status-dot"></i><span class="status-txt">Connected</span></span>
         </div>
-        <div class="row small" style="align-items:center;gap:6px;flex-wrap:nowrap">
+        <div class="row small hub-head-sub" style="align-items:center;gap:6px;flex-wrap:wrap">
           <svg class="ic"><use href="#i-folder"/></svg><input id="cwd" class="mono small cwd-input" list="cwd-list" value="${esc(t.cwd)}" aria-label="Working folder" title="Change the folder agents work in"><datalist id="cwd-list"></datalist>
           ${t.settings.quick ? '<span class="chip" title="Quick chat: its own folder under ~/Conclave">quick</span>' : ''}
           <button class="small icon-btn" id="open-cwd" title="Show folder in Explorer">↗</button>
@@ -285,7 +291,7 @@ async function renderThread(box, id, list, onListChanged) {
           <div class="team-strip" id="team" title="Team: roles and usage. Click to edit."></div>
         </div>
       </div>
-      <div class="row" style="align-items:center;gap:6px">
+      <div class="row hub-head-actions" style="align-items:center;gap:6px">
         <button id="btn-pin" class="icon-btn ${isPinned ? 'active' : ''}" title="${isPinned ? 'Unpin chat' : 'Pin chat to top'}">${isPinned ? '📌' : '📍'}</button>
         <button id="btn-archive" class="icon-btn ${isArchived ? 'active' : ''}" title="${isArchived ? 'Unarchive chat' : 'Archive chat'}">${isArchived ? '📦' : '🗄'}</button>
         <a class="btn icon-btn" href="/api/threads/${id}/export" download title="Export as Markdown">⇩</a>
@@ -365,23 +371,27 @@ async function renderThread(box, id, list, onListChanged) {
 
     obBox.innerHTML = `
       <div class="onboarding-card">
-        <div class="onboarding-header">
-          <div class="onboarding-title"><span>🚀 Getting Started with Conclave</span><span class="chip">${doneCount}/${items.length}</span></div>
-          <div class="row" style="gap:6px">
-            <button class="ghost tiny" id="ob-dismiss" title="Dismiss checklist">✕ Dismiss</button>
+        <details class="onboarding-details" id="ob-details" ${typeof window !== 'undefined' && window.innerWidth > 860 ? 'open' : ''}>
+          <summary class="onboarding-header">
+            <div class="onboarding-title"><span>🚀 Getting Started with Conclave</span><span class="chip">${doneCount}/${items.length}</span></div>
+            <div class="row" style="gap:6px">
+              <button class="ghost tiny" id="ob-dismiss" title="Dismiss checklist">✕ Dismiss</button>
+            </div>
+          </summary>
+          <div class="onboarding-progress"><i style="width:${pct}%"></i></div>
+          <div class="onboarding-list">
+            ${items.map(it => `
+              <div class="onboarding-item ${it.done ? 'done' : ''}" data-ob="${it.id}">
+                <span class="onboarding-check">${it.done ? '✓' : '○'}</span>
+                <span><b>${it.text}</b> <span class="muted tiny">· ${it.hint}</span></span>
+              </div>`).join('')}
           </div>
-        </div>
-        <div class="onboarding-progress"><i style="width:${pct}%"></i></div>
-        <div class="onboarding-list">
-          ${items.map(it => `
-            <div class="onboarding-item ${it.done ? 'done' : ''}" data-ob="${it.id}">
-              <span class="onboarding-check">${it.done ? '✓' : '○'}</span>
-              <span><b>${it.text}</b> <span class="muted tiny">· ${it.hint}</span></span>
-            </div>`).join('')}
-        </div>
+        </details>
       </div>`;
 
-    $('#ob-dismiss')?.addEventListener('click', () => {
+    $('#ob-dismiss')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       store.set('cv-onboarding-dismissed', '1');
       obBox.innerHTML = '';
     });
@@ -399,6 +409,11 @@ async function renderThread(box, id, list, onListChanged) {
   }
 
   // Pin & Archive buttons
+  $('#btn-mobile-chats')?.addEventListener('click', () => document.body.classList.toggle('mobile-list-open'));
+  $('#m-btn-pin')?.addEventListener('click', () => { $('#btn-pin')?.click(); $('#hub-more-actions')?.removeAttribute('open'); });
+  $('#m-btn-archive')?.addEventListener('click', () => { $('#btn-archive')?.click(); $('#hub-more-actions')?.removeAttribute('open'); });
+  $('#m-btn-focus')?.addEventListener('click', () => { $('#focus')?.click(); $('#hub-more-actions')?.removeAttribute('open'); });
+  $('#m-btn-del')?.addEventListener('click', () => { $('#del')?.click(); $('#hub-more-actions')?.removeAttribute('open'); });
   $('#btn-pin').onclick = async () => {
     const cur = !!t.settings?.pinned;
     t = await api('/api/threads/' + id, { method: 'PATCH', body: { settings: { pinned: !cur } } });
@@ -973,7 +988,13 @@ async function renderThread(box, id, list, onListChanged) {
 
   const grow = () => {
     input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 260) + 'px';
+    const isMobile = (typeof window !== 'undefined') && (window.innerWidth <= 860 || window.innerHeight <= 600);
+    const maxH = (typeof window !== 'undefined' && window.innerHeight < 550)
+      ? 56
+      : isMobile
+        ? Math.min(100, Math.floor(window.innerHeight * 0.18))
+        : 260;
+    input.style.height = Math.min(input.scrollHeight, maxH) + 'px';
   };
 
   input.addEventListener('input', () => {
@@ -1221,5 +1242,5 @@ function settingsDialog(t, save) {
 export function leaveHub() {
   cleanupThread?.(); cleanupThread = null;
   es?.close(); es = null;
-  if (typeof document !== 'undefined') document.body.classList.remove('focus-mode', 'list-collapsed');
+  if (typeof document !== 'undefined') document.body.classList.remove('focus-mode', 'list-collapsed', 'mobile-list-open');
 }

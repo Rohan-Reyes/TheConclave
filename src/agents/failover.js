@@ -7,10 +7,21 @@ import { getLimits } from './catalog.js';
 
 const QUOTA_RE = /usage limit|rate.?limit|quota|exhausted|out of (credits|usage|tokens)|insufficient|credit balance|limit (reached|exceeded)|exceeded your|too many requests|\b429\b|billing|resource_exhausted|upgrade (your )?plan|try again (at|in|later)/i;
 const NOT_QUOTA_RE = /context (length|window)|maximum context|prompt is too long|max_tokens/i;
+const LAUNCH_ERROR_RE = /spawn .*ENOENT|executable not found|could not start|not recognized as an internal or external command/i;
+
+export function isLaunchError(text) {
+  return LAUNCH_ERROR_RE.test(String(text || ''));
+}
+
+export function exhaustionSummary(allExhausted, outNotes = []) {
+  const notesStr = outNotes.length ? ` ${outNotes.join('; ')}.` : '';
+  if (allExhausted) return `All agents are out of credits right now.${notesStr}`;
+  return `Some agents are unavailable or encountered errors.${notesStr}`;
+}
 
 export function isQuotaError(text) {
   const t = String(text || '');
-  return QUOTA_RE.test(t) && !NOT_QUOTA_RE.test(t);
+  return QUOTA_RE.test(t) && !NOT_QUOTA_RE.test(t) && !LAUNCH_ERROR_RE.test(t);
 }
 
 // Best guess for when the agent can work again.

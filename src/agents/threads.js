@@ -3,10 +3,10 @@ import { getDb, now, newId } from '../db.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { normPath, HOME } from '../paths.js';
-import { runTurn, member, memberIds } from './drivers.js';
+import { runTurn, member, memberIds, isAgentAvailable } from './drivers.js';
 import { snapshot, diffStat, diffText, revert } from './snapshot.js';
 import { denyForMessage, approvalBus, listApprovals } from './approvals.js';
-import { isQuotaError, markExhausted, outOfCredits, otherAgyBucket, fmtTime } from './failover.js';
+import { isQuotaError, isLaunchError, exhaustionSummary, markExhausted, outOfCredits, otherAgyBucket, fmtTime } from './failover.js';
 import { getLimits } from './catalog.js';
 import { kvGet, kvSet } from '../db.js';
 import { loadTranscript } from '../indexer.js';
@@ -242,7 +242,7 @@ export const ROLES = {
   bench: { label: 'Benched', desc: 'not taking part right now' },
 };
 const roleOf = (thread, tool) => thread.settings.roles?.[tool] || (tool === thread.settings.chair ? 'lead' : 'member');
-const activeMembers = thread => thread.settings.members.filter(t => memberIds().includes(t) && roleOf(thread, t) !== 'bench');
+const activeMembers = thread => thread.settings.members.filter(t => memberIds().includes(t) && roleOf(thread, t) !== 'bench' && isAgentAvailable(t));
 function leadOf(thread, members) {
   const r = thread.settings.roles || {};
   const lead = members.find(m => r[m] === 'lead') || thread.settings.chair;
@@ -458,6 +458,10 @@ async function runAgent(thread, tool, opts = {}) {
       outNotes.push(`${member(cand).label} stalled (no output)`);
       continue;
     }
+    if (reply?.status === 'error' && isLaunchError(reply.error)) {
+      outNotes.push(`${member(cand).label} failed to start (${reply.error})`);
+      continue;
+    }
     if (!reply || reply.status !== 'error' || !isQuotaError(reply.error)) return reply;
     // Antigravity: Gemini and Claude/GPT models have separate quotas. Try the other bucket once.
     if (cand === 'antigravity' && f.otherModel) {
@@ -470,9 +474,10 @@ async function runAgent(thread, tool, opts = {}) {
     outNotes.push(`${member(cand).label} ran out of credits (back ${fmtTime(until)})`);
   }
   if (isCancelled(thread.id)) return null;
-  // Everyone is out.
+  // Everyone in the fallback order was exhausted or failed.
+  const allExhausted = order.length > 0 && order.every(t => !!outOfCredits(t));
   const soonest = order.map(t => outOfCredits(t)?.until).filter(Boolean).sort((a, b) => a - b)[0];
-  const msg = `All agents are out of credits right now. ${outNotes.join('; ')}.`;
+  const msg = exhaustionSummary(allExhausted, outNotes);
   if (f.waitForReset && soonest && !opts.exclude?.length) {
     kvSet(`waiting:${thread.id}`, { until: soonest + 60_000, tool, round: opts.round || null });
     addMessage(thread.id, { role: 'system', content: `${msg} I'll continue automatically at ${fmtTime(soonest + 60_000)}. You can also retry now or cancel.` });
@@ -507,7 +512,7 @@ setInterval(() => {
 function mentionsIn(text, self, members) {
   const found = [];
   for (const line of String(text || '').split('\n')) {
-    const m = line.trim().match(/^@(\w+)\b/);
+    const m = line.trim().match(/^@([\w.-]+)\b/);
     if (!m) continue;
     const tool = memberIds().find(t => member(t).mention.includes(m[1].toLowerCase()));
     if (tool && tool !== self && members.includes(tool) && !found.includes(tool)) found.push(tool);
@@ -517,7 +522,7 @@ function mentionsIn(text, self, members) {
 
 // Who should answer a user message: @mentions win, otherwise the thread's target.
 function routeUserMessage(text, thread) {
-  const m = String(text).match(/@(\w+)/g) || [];
+  const m = String(text).match(/@([\w.-]+)/g) || [];
   const names = m.map(x => x.slice(1).toLowerCase());
   if (names.some(n => n === 'all' || n === 'council')) return { council: true };
   const tools = [...new Set(names.map(n => memberIds().find(t => member(t).mention.includes(n))).filter(Boolean))];
