@@ -103,7 +103,9 @@ server.registerTool('project_context', {
 // ---- Talk to the other agents through Conclave (needs the Conclave app running).
 const HUB = `http://127.0.0.1:${process.env.CONCLAVE_PORT || 4777}`;
 async function hub(pathname, body, method = body ? 'POST' : 'GET') {
-  const r = await fetch(HUB + pathname, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  const headers = body ? { 'Content-Type': 'application/json' } : {};
+  if (process.env.CONCLAVE_INTERNAL_TOKEN) headers['X-Conclave-Internal'] = process.env.CONCLAVE_INTERNAL_TOKEN;
+  const r = await fetch(HUB + pathname, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || `Conclave returned HTTP ${r.status}`);
   return j;

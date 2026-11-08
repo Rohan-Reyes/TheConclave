@@ -12,6 +12,8 @@ import { lineDiff } from './src/config/backup.js';
 import * as threads from './src/agents/threads.js';
 import { mountExtra } from './src/routes-extra.js';
 import { mountRunner } from './src/runner.js';
+import { mountAuth } from './src/auth.js';
+import { mountFileExplorer } from './src/file-explorer.js';
 
 const PORT = Number(process.env.CONCLAVE_PORT || process.env.PORT || 4777);
 const HOST = '127.0.0.1';
@@ -20,6 +22,7 @@ const app = express();
 // This server can open terminals and edit config files, so only accept
 // requests that come from its own page on localhost (blocks DNS rebinding / CSRF).
 const okHost = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
+if (process.env.CONCLAVE_PUBLIC_ORIGIN) okHost.add(new URL(process.env.CONCLAVE_PUBLIC_ORIGIN).host);
 app.use((req, res, next) => {
   if (!okHost.has(req.headers.host)) return res.status(403).send('Forbidden host');
   const origin = req.headers.origin;
@@ -28,6 +31,7 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json({ limit: '6mb' }));
+mountAuth(app, { root: ROOT });
 app.use(express.static(path.join(ROOT, 'public')));
 
 const wrap = fn => (req, res) => Promise.resolve().then(() => fn(req, res)).then(
@@ -35,6 +39,7 @@ const wrap = fn => (req, res) => Promise.resolve().then(() => fn(req, res)).then
   err => res.status(err.status || 400).json({ error: err.message }));
 
 mountRunner(app, wrap);
+mountFileExplorer(app, wrap);
 app.post('/api/threads/:id/messages/:mid/edit', wrap(req => threads.editLastUserMessage(req.params.id, req.params.mid, req.body.text)));
 
 function chatOr404(id) {

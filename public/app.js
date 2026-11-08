@@ -9,6 +9,7 @@ import { api, toast, modal, $ } from './lib.js';
 import { openPalette } from './views/palette.js';
 import { renderUsage } from './views/usage.js';
 import { renderRunner } from './views/runner.js';
+import { renderFiles } from './views/files.js';
 
 const routes = [
   [/^\/?$/, 'home', renderHome],
@@ -18,6 +19,7 @@ const routes = [
   [/^\/projects$/, 'projects', renderProjects],
   [/^\/project\/(.+)$/, 'projects', renderProject],
   [/^\/runner$/, 'projects', renderRunner],
+  [/^\/files$/, 'files', renderFiles],
   [/^\/config$/, 'config', renderConfig],
   [/^\/usage$/, 'usage', renderUsage],
   [/^\/hub$/, 'hub', renderHub],
@@ -79,6 +81,16 @@ export function openShortcuts() {
 }
 
 if (typeof window !== 'undefined') {
+  api('/api/auth/status').then(state => {
+    if (!state.enabled || !state.authenticated) return;
+    const button = document.createElement('button');
+    button.className = 'ghost small'; button.textContent = 'Sign out';
+    button.onclick = async () => {
+      try { await api('/api/auth/logout', { method: 'POST', body: {} }); location.replace('/login'); }
+      catch (e) { toast(e.message, true); }
+    };
+    document.querySelector('.nav-foot .row')?.append(button);
+  }).catch(() => {});
   $('#reindex')?.addEventListener('click', async () => {
     const b = $('#reindex'); b.disabled = true; b.textContent = '↻ Scanning…';
     try {

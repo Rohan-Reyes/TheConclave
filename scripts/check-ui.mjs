@@ -623,7 +623,7 @@ try {
   monitorDesktopMutations = true;
   const welcomeChecks = [];
 
-  for (const route of ['', 'chats', 'memory', 'projects', 'config', 'usage']) {
+  for (const route of ['', 'chats', 'memory', 'projects', 'files', 'config', 'usage']) {
     await navigate(route);
     await waitFor('!document.querySelector("#view")?.innerText.includes("Loading")');
     const hasErr = await evaluate('!!document.querySelector("#view .error")');

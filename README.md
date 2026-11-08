@@ -53,7 +53,9 @@ Open that port manually. Keep `CONCLAVE_PORT` consistent in agent/MCP environmen
 
 ## Local data and access
 
-Conclave listens on **127.0.0.1 only** and checks request hosts and origins. It has no remote-login layer; do not expose its port through a tunnel or reverse proxy. The app can run commands and change project files with your agents' existing access.
+Conclave listens on **127.0.0.1 only** and checks request hosts and origins. For a private remote deployment, configure the owner login and HTTPS public origin before connecting a tunnel; the server refuses a public-origin configuration without credentials. See [Raspberry Pi deployment](docs/RASPBERRY_PI.md). The app can run commands and change project files with your agents' existing access.
+
+The **Files** page supports workspace uploads, folder creation, renaming and UTF-8 text editing with conflict detection. `CONCLAVE_FILES_ROOT` selects the workspace (default `~/Conclave`). Owner login protects all pages and APIs when enabled, with no public registration.
 
 | Area | Reads | Writes |
 | --- | --- | --- |

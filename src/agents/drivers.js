@@ -74,7 +74,7 @@ export function whichAll(names) {
   const out = {};
   for (const n of names) {
     let hit = null;
-    try { hit = execFileSync('where', [n], { encoding: 'utf8', windowsHide: true, timeout: 5000, stdio: ['pipe', 'pipe', 'ignore'] }).split(/\r?\n/).filter(Boolean)[0] || null; }
+    try { hit = execFileSync(process.platform === 'win32' ? 'where' : 'which', [n], { encoding: 'utf8', windowsHide: true, timeout: 5000, stdio: ['pipe', 'pipe', 'ignore'] }).split(/\r?\n/).filter(Boolean)[0] || null; }
     catch { hit = null; }
     if (!hit && WELL_KNOWN_EXES[n]) {
       hit = WELL_KNOWN_EXES[n].find(p => p && fs.existsSync(p)) || null;

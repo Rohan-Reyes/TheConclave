@@ -65,6 +65,7 @@ export function normPath(p) {
   let s = String(p);
   if (s.startsWith('file:///')) s = decodeURIComponent(s.slice(8));
   else if (s.startsWith('file://')) s = decodeURIComponent(s.slice(7));
+  if (process.platform !== 'win32') return path.normalize(s);
   s = s.replace(/\//g, '\\').replace(/\\+$/, '');
   if (/^[a-z]:/.test(s)) s = s[0].toUpperCase() + s.slice(1);
   if (/^[A-Z]:$/.test(s)) s += '\\';

@@ -8,6 +8,7 @@ export async function api(url, { method = 'GET', body } = {}) {
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && typeof window !== 'undefined' && !url.startsWith('/api/auth/')) window.location.replace('/login');
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
 }
