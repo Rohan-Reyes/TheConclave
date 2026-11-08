@@ -111,6 +111,30 @@ test('binary and disguised images are rejected while empty text is allowed', t =
   assert.equal(result.file.size, 0);
 });
 
+test('user can attach almost all filetypes including pdfs, docs, and archives', t => {
+  const { store } = fixture(t);
+  const pdfBytes = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF');
+  const zipBytes = Buffer.from('PK\x03\x04\x14\x00\x00\x00\x00\x00archive content');
+  const result = store.upload({
+    threadId: 'existing',
+    files: [
+      { name: 'document.pdf', data: pdfBytes.toString('base64') },
+      { name: 'data.zip', data: zipBytes.toString('base64') }
+    ]
+  });
+  assert.equal(result.files.length, 2);
+  assert.match(result.files[0].path, /\.pdf$/i);
+  assert.equal(result.files[0].isImage, false);
+  assert.equal(result.files[0].url, null);
+  assert.ok(fs.existsSync(result.files[0].path));
+  assert.deepEqual(fs.readFileSync(result.files[0].path), pdfBytes);
+
+  assert.match(result.files[1].path, /\.zip$/i);
+  assert.equal(result.files[1].isImage, false);
+  assert.ok(fs.existsSync(result.files[1].path));
+  assert.deepEqual(fs.readFileSync(result.files[1].path), zipBytes);
+});
+
 for (const segment of ['.conclave', 'attachments']) test(`symbolic link/junction escape through ${segment} is refused`, t => {
   const { project, outside, store } = fixture(t);
   const target = segment === '.conclave' ? path.join(project, '.conclave') : path.join(project, '.conclave', 'attachments');

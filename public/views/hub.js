@@ -121,14 +121,17 @@ export async function renderHub(view, params, threadId) {
     const active = filtered.filter(t => !t.settings?.pinned && !t.settings?.archived);
     const archived = filtered.filter(t => t.settings?.archived);
 
-    const renderItem = t => `
+    const renderItem = t => {
+      const seamless = typeof t.settings?.sync === 'boolean' ? t.settings.sync : (t.cwd || '').toLowerCase().includes('conclave');
+      return `
       <div class="hub-thread-row" style="position:relative">
         <a class="hub-thread ${t.id === threadId ? 'on' : ''} ${t.settings?.pinned ? 'pinned' : ''}" href="#/hub/${t.id}">
           <span class="tgt ${t.target}">${esc(TARGETS[t.target] || t.target)}</span>
           <span class="t">${t.settings?.pinned ? '<span class="pin-badge" title="Pinned">📌</span>' : ''}${esc(t.title)}</span>
-          <span class="muted tiny">${t.running ? '<span class="live-dot"></span> working' : ago(t.updated)} · ${t.n} msgs</span>
+          <span class="muted tiny">${seamless ? '<span class="sync-indicator seamless" title="Seamless: synced with Raspberry Pi">☁️</span> ' : '<span class="sync-indicator local" title="Local only">💻</span> '}${t.running ? '<span class="live-dot"></span> working' : (t.otherDeviceWorking ? '<span class="live-dot warn"></span> other device working' : ago(t.updated))} · ${t.n} msgs</span>
         </a>
       </div>`;
+    };
 
     const parts = [];
     if (pinned.length) {
@@ -271,9 +274,13 @@ async function renderThread(box, id, list, onListChanged) {
   let pendingAttachments = [];
   let sending = false;
   const draftKey = `conclave:draft:${id}`;
+  const attemptKey = `conclave:send-attempt:${id}`;
+  let pendingAttempt = null;
+  try { pendingAttempt = JSON.parse(store.get(attemptKey) || 'null'); } catch {}
 
   const isPinned = !!t.settings?.pinned;
   const isArchived = !!t.settings?.archived;
+  const isSeamless = typeof t.settings?.sync === 'boolean' ? t.settings.sync : (t.cwd || '').toLowerCase().includes('conclave');
 
   box.innerHTML = `
     <div class="hub-head">
@@ -288,6 +295,9 @@ async function renderThread(box, id, list, onListChanged) {
           ${t.settings.quick ? '<span class="chip" title="Quick chat: its own folder under ~/Conclave">quick</span>' : ''}
           <button class="small icon-btn" id="open-cwd" title="Show folder in Explorer">↗</button>
           <button class="small" id="open-runner" title="Project tasks and script runner">▶ Runner</button>
+          <button class="small" id="open-term" title="Open built-in terminal in this folder">>_ Terminal</button>
+          <button class="small chip-sync ${isSeamless ? 'chip-seamless' : 'chip-local'}" id="btn-sync-toggle" title="Click to toggle sync between Seamless (Raspberry Pi synced) and Local Only">${isSeamless ? '☁️ Seamless' : '💻 Local Only'}</button>
+          ${isSeamless ? '<button class="small ghost" id="btn-sync-now" title="Synchronize chat messages with Raspberry Pi">🔄 Sync Now</button>' : ''}
           <div class="team-strip" id="team" title="Team: roles and usage. Click to edit."></div>
         </div>
       </div>
@@ -303,6 +313,9 @@ async function renderThread(box, id, list, onListChanged) {
           <div class="hub-more-dropdown">
             <button id="m-btn-pin" class="menu-item" type="button">${isPinned ? '📌 Unpin chat' : '📍 Pin chat'}</button>
             <button id="m-btn-archive" class="menu-item" type="button">${isArchived ? '📦 Unarchive' : '🗄 Archive'}</button>
+            <button id="m-btn-sync" class="menu-item" type="button">${isSeamless ? '💻 Switch to Local Only' : '☁️ Switch to Seamless'}</button>
+            ${isSeamless ? '<button id="m-btn-sync-now" class="menu-item" type="button">🔄 Sync with Pi</button>' : ''}
+            <button id="m-btn-terminal" class="menu-item" type="button">&gt;_ Terminal</button>
             <a id="m-btn-export" class="menu-item" href="/api/threads/${id}/export" download>⇩ Export Markdown</a>
             <button id="m-btn-focus" class="menu-item" type="button">⤢ Full screen</button>
             <button id="m-btn-del" class="menu-item danger" type="button">✕ Delete chat</button>
@@ -311,6 +324,7 @@ async function renderThread(box, id, list, onListChanged) {
       </div>
     </div>
     <div id="onboarding-container"></div>
+    <div class="wait-banner" id="remote-working" role="status" aria-live="polite" hidden></div>
     <div class="msgs" id="msgs"></div>
     <div class="wait-banner" id="waiting" hidden></div>
     <div class="queue" id="queue" hidden></div>
@@ -422,6 +436,9 @@ async function renderThread(box, id, list, onListChanged) {
   $('#btn-mobile-chats')?.addEventListener('click', () => document.body.classList.toggle('mobile-list-open'));
   $('#m-btn-pin')?.addEventListener('click', () => { $('#btn-pin')?.click(); $('#hub-more-actions')?.removeAttribute('open'); });
   $('#m-btn-archive')?.addEventListener('click', () => { $('#btn-archive')?.click(); $('#hub-more-actions')?.removeAttribute('open'); });
+  $('#m-btn-sync')?.addEventListener('click', () => { $('#hub-more-actions')?.removeAttribute('open'); $('#btn-sync-toggle')?.click(); });
+  $('#m-btn-sync-now')?.addEventListener('click', () => { $('#hub-more-actions')?.removeAttribute('open'); $('#btn-sync-now')?.click(); });
+  $('#m-btn-terminal')?.addEventListener('click', () => { $('#hub-more-actions')?.removeAttribute('open'); $('#open-term')?.click(); });
   $('#m-btn-export')?.addEventListener('click', () => $('#hub-more-actions')?.removeAttribute('open'));
   $('#m-btn-focus')?.addEventListener('click', () => { $('#focus')?.click(); $('#hub-more-actions')?.removeAttribute('open'); });
   const mDel = $('#m-btn-del');
@@ -478,6 +495,19 @@ async function renderThread(box, id, list, onListChanged) {
   };
 
   // Attachments Handling
+  function fileIcon(name = '') {
+    if (/\.pdf$/i.test(name)) return '📕';
+    if (/\.(zip|tar|gz|7z|rar|bz2|xz)$/i.test(name)) return '📦';
+    if (/\.(mp3|wav|ogg|m4a|flac|aac)$/i.test(name)) return '🎵';
+    if (/\.(mp4|webm|mov|mkv|avi)$/i.test(name)) return '🎬';
+    if (/\.(docx?|odt|rtf)$/i.test(name)) return '📝';
+    if (/\.(xlsx?|ods|csv|tsv)$/i.test(name)) return '📊';
+    if (/\.(pptx?|odp)$/i.test(name)) return '📑';
+    if (/\.(json|ya?ml|toml|xml)$/i.test(name)) return '📋';
+    if (/\.(js|ts|py|rs|go|c|cpp|java|sh|ps1|html|css)$/i.test(name)) return '💻';
+    return '📄';
+  }
+
   function renderAttachmentChips() {
     if (!pendingAttachments.length) {
       attBox.hidden = true;
@@ -487,7 +517,7 @@ async function renderThread(box, id, list, onListChanged) {
     attBox.hidden = false;
     attBox.innerHTML = pendingAttachments.map(a => `
       <div class="att-chip ${a.uploading ? 'uploading' : ''}" data-att-id="${a.id}">
-        ${a.previewUrl ? `<img class="att-thumb" src="${esc(a.previewUrl)}" alt="">` : '<span style="font-size:13px">📄</span>'}
+        ${a.previewUrl ? `<img class="att-thumb" src="${esc(a.previewUrl)}" alt="">` : `<span style="font-size:13px">${fileIcon(a.name)}</span>`}
         <span class="att-name" title="${esc(a.name)}">${esc(a.name)}</span>
         <span class="att-size">${formatBytes(a.size)}</span>
         <button type="button" class="att-remove" data-rm-att="${a.id}" title="Remove file">✕</button>
@@ -785,10 +815,14 @@ async function renderThread(box, id, list, onListChanged) {
   function drawChrome() {
     if (disposed || !$('#stop')) return;
     const busy = t.running;
+    const remote = isSeamless && t.otherDeviceWorking;
+    const remoteNote = $('#remote-working');
+    remoteNote.hidden = !remote;
+    remoteNote.textContent = remote ? `☁️ Other device already working${t.remoteExecutionStatus?.device ? ` (${t.remoteExecutionStatus.device})` : ''}. Your draft stays here until you send it.` : '';
     $('#stop').hidden = !busy;
     $('#now').hidden = !busy;
     $('#send').textContent = busy ? 'Queue' : 'Send';
-    $('#send').title = busy ? 'Send after the agents finish (Enter)' : '';
+    $('#send').title = remote ? 'Other device already working. Your draft will be kept.' : busy ? 'Send after the agents finish (Enter)' : '';
     const w = t.waiting;
     $('#waiting').hidden = !w || busy;
     if (w && !busy) $('#waiting').innerHTML = `⏳ All agents are out of credits. Conclave will continue at <b>${new Date(w.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</b>.
@@ -809,7 +843,8 @@ async function renderThread(box, id, list, onListChanged) {
     $('#apmode').hidden = t.target !== 'council';
     drawPickers();
     drawWorking();
-    $('#input').placeholder = busy ? 'Agents are working… Enter queues message, Ctrl+Enter sends now'
+    $('#input').placeholder = remote ? 'Other device already working… Your draft stays on this device'
+      : busy ? 'Agents are working… Enter queues message, Ctrl+Enter sends now'
       : t.target === 'council' ? 'Ask the council… (type / for templates)' : `Message ${TARGETS[t.target]}… (type / for templates)`;
   }
 
@@ -914,6 +949,27 @@ async function renderThread(box, id, list, onListChanged) {
     if (was && !t.running) notifyDone(t);
   };
 
+  let checkingRemote = false;
+  const checkRemote = async () => {
+    if (disposed || !isSeamless || checkingRemote) return;
+    checkingRemote = true;
+    try {
+      const state = await api(`/api/sync/lock/${id}`);
+      if (disposed) return;
+      const previous = t.otherDeviceWorking;
+      if (typeof state.otherDeviceWorking === 'boolean') t.otherDeviceWorking = state.otherDeviceWorking;
+      t.remoteExecutionStatus = state;
+      drawChrome();
+      if (previous !== t.otherDeviceWorking) {
+        onListChanged?.();
+        if (previous && !t.otherDeviceWorking) refresh();
+      }
+    } catch { /* A failed status check must not clear a known remote claim. */ }
+    finally { checkingRemote = false; }
+  };
+  const remoteTimer = isSeamless ? setInterval(checkRemote, 5000) : null;
+  checkRemote();
+
   const soonDraw = () => { if (disposed) return; clearTimeout(pendingDraw); pendingDraw = setTimeout(draw, 50); };
   const soonPatch = m => {
     if (disposed) return;
@@ -927,6 +983,7 @@ async function renderThread(box, id, list, onListChanged) {
   };
   cleanupThread = () => {
     disposed = true;
+    clearInterval(remoteTimer);
     clearTimeout(pendingDraw);
     for (const timer of patchTimers.values()) clearTimeout(timer);
     patchTimers.clear();
@@ -981,9 +1038,20 @@ async function renderThread(box, id, list, onListChanged) {
     sending = true;
     try {
       let text = String(body.text || '').trim();
+      // A lost response must retry the same logical message, including its
+      // already-uploaded attachment paths, instead of starting a second run.
+      const source = JSON.stringify({ text, mode: body.mode || '', executePlan: !!body.executePlan, target: t.target, attachments: pendingAttachments.map(a => ({ name: a.name, size: a.size, data: a.data })) });
+      const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
+      const fingerprint = Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, '0')).join('');
+      if (!pendingAttempt || pendingAttempt.fingerprint !== fingerprint) {
+        pendingAttempt = { fingerprint, requestId: crypto.randomUUID() };
+        store.set(attemptKey, JSON.stringify(pendingAttempt));
+      }
+      body.requestId = pendingAttempt.requestId;
 
       // If attachments exist, upload them first and enrich prompt with canonical project paths
-      if (pendingAttachments.length) {
+      if (pendingAttempt.uploadedText) body.text = pendingAttempt.uploadedText;
+      else if (pendingAttachments.length) {
         const totalBytes = pendingAttachments.reduce((sum, a) => sum + a.size, 0);
         if (totalBytes > 4 * 1024 * 1024) {
           toast(`Total attachments (${formatBytes(totalBytes)}) exceed 4MB limit`, true);
@@ -1005,9 +1073,23 @@ async function renderThread(box, id, list, onListChanged) {
         }
         text = (text ? text + '\n' : '') + attMd;
         body.text = text;
+        pendingAttempt.uploadedText = text;
+        store.set(attemptKey, JSON.stringify(pendingAttempt));
       }
 
       const r = await api(`/api/threads/${id}/messages`, { method: 'POST', body });
+      if (r.busy) {
+        t.otherDeviceWorking = true;
+        t.remoteExecutionStatus = { device: r.device, otherDeviceWorking: true };
+        drawChrome();
+        saveDraft();
+        toast(`⏳ ${r.note || 'Other device already working'}`, true);
+        checkRemote();
+        return;
+      }
+      if (r.ok === false) throw new Error(r.note || 'The message was not accepted. Your draft was kept.');
+      pendingAttempt = null;
+      store.del(attemptKey);
       input.value = '';
       grow();
       pendingAttachments = [];
@@ -1016,6 +1098,7 @@ async function renderThread(box, id, list, onListChanged) {
       store.del(draftKey);
 
       if (r.queued) toast(`Queued (#${r.position}). It sends when the agents finish.`);
+      else if (r.duplicate) { toast('This message was already accepted.'); refresh(); }
       else { t.running = true; drawChrome(); onListChanged?.(); }
       askNotifyPermission();
       if (r.queued || body.mode === 'now') refresh();
@@ -1111,6 +1194,37 @@ async function renderThread(box, id, list, onListChanged) {
   $('#cwd').onchange = e => api('/api/threads/' + id, { method: 'PATCH', body: { cwd: e.target.value } }).then(() => toast('Folder updated'));
   $('#open-cwd').onclick = () => openWith(t.cwd, 'folder');
   $('#open-runner').onclick = () => openRunnerModal(t.cwd, text => { input.value = (input.value ? input.value + '\n\n' : '') + text; grow(); input.focus(); saveDraft(); });
+  $('#open-term').onclick = () => { location.hash = '#/terminal?cwd=' + encodeURIComponent(t.cwd || ''); };
+  $('#btn-sync-toggle').onclick = async () => {
+    const nextSync = !isSeamless;
+    try {
+      const res = await api('/api/threads/' + id + '/sync', {
+        method: 'PATCH',
+        body: { sync: nextSync }
+      });
+      t.settings.sync = res.sync;
+      toast(res.sync ? '☁️ Seamless Sync enabled (synced with Raspberry Pi)' : '💻 Switched to Local Only (this machine only)');
+      onListChanged?.();
+      renderThread(box, id, list, onListChanged);
+    } catch (e) {
+      toast('Failed to update sync mode: ' + e.message, true);
+    }
+  };
+  if ($('#btn-sync-now')) {
+    $('#btn-sync-now').onclick = async () => {
+      const btn = $('#btn-sync-now');
+      btn.disabled = true;
+      btn.textContent = '🔄 Syncing…';
+      try {
+        const res = await api('/api/sync/thread/' + id, { method: 'POST', body: {} });
+        toast(`Synced! Pushed ${res.pushedMessages} messages, Pi added ${res.remoteInserted}`);
+      } catch (e) {
+        toast('Sync failed: ' + e.message, true);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '🔄 Sync Now'; }
+      }
+    };
+  }
   $('#team').onclick = () => teamDialog(t, TOOLS, saveSettings);
   $('#focus').onclick = toggleFocus;
   $('#del').onclick = async () => {

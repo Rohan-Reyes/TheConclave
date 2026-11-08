@@ -2,54 +2,106 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#14161a">
   <title>Conclave</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='9' cy='16' r='5' fill='%23d97757'/><circle cx='23' cy='9' r='5' fill='%234285f4'/><circle cx='23' cy='23' r='5' fill='%2310a37f'/></svg>">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/conclave-polish.css">
+  <link rel="stylesheet" href="/vendor/xterm.css">
+  <!-- Design system and app shell. Loaded last so it sets the final look. -->
+  <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-  <!-- icon sprite -->
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
     <symbol id="i-home" viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9h-5v-6H9v6H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
     <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
     <symbol id="i-brain" viewBox="0 0 24 24"><path d="M12 5a3 3 0 0 0-6 1 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 6 1zm0 0a3 3 0 0 1 6 1 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-6 1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v4h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
     <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9 7 7m10 10 2.1 2.1M4.9 19.1 7 17m10-10 2.1-2.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 6h10m4 0h2M4 12h4m4 0h8M4 18h12m4 0h0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="16" cy="6" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="12" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="18" cy="18" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
     <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V10m6 10V4m6 16v-7m4 7H3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m20 20-4.5-4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m4 17 6-5-6-5m8 10h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9 4v16" stroke="currentColor" stroke-width="1.8"/></symbol>
   </svg>
-  <aside class="nav">
-    <div class="brand">
-      <span class="dots"><i class="t-claude"></i><i class="t-antigravity"></i><i class="t-codex"></i></span>
-      Conclave
+
+  <!-- Phone top bar -->
+  <header class="topbar">
+    <button class="icon-btn ghost" id="open-drawer" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false"><svg class="ic"><use href="#i-menu"/></svg></button>
+    <div class="topbar-title" id="page-title">Conclave</div>
+    <button class="icon-btn ghost" id="open-search-mobile" aria-label="Search"><svg class="ic"><use href="#i-search"/></svg></button>
+  </header>
+
+  <aside class="sidebar" id="sidebar" aria-label="Main navigation">
+    <div class="sidebar-head">
+      <a class="brand" href="#/" aria-label="Conclave home">
+        <span class="dots" aria-hidden="true"><i class="t-claude"></i><i class="t-antigravity"></i><i class="t-codex"></i></span>
+        <span class="brand-name">Conclave</span>
+        <span class="version-badge">v1.2.0</span>
+      </a>
+      <button class="icon-btn ghost" id="collapse-sidebar" title="Collapse sidebar" aria-label="Collapse sidebar"><svg class="ic"><use href="#i-panel"/></svg></button>
     </div>
+    <a class="new-chat-btn" href="#/hub?new=1"><svg class="ic"><use href="#i-plus"/></svg><span>New chat</span></a>
     <button class="search-btn" id="open-search" title="Search everything (Ctrl+K)">
       <svg class="ic"><use href="#i-search"/></svg><span>Search</span><kbd>Ctrl K</kbd>
     </button>
-    <nav>
-      <a href="#/hub" data-nav="hub"><svg class="ic"><use href="#i-chat"/></svg>Council chat</a>
-      <a href="#/" data-nav="home"><svg class="ic"><use href="#i-home"/></svg>Overview</a>
-      <a href="#/chats" data-nav="chats"><svg class="ic"><use href="#i-list"/></svg>Chat history</a>
-      <a href="#/memory" data-nav="memory"><svg class="ic"><use href="#i-brain"/></svg>Memory</a>
-      <a href="#/projects" data-nav="projects"><svg class="ic"><use href="#i-folder"/></svg>Projects</a>
-      <a href="#/files" data-nav="files"><svg class="ic"><use href="#i-folder"/></svg>Files</a>
-      <a href="#/usage" data-nav="usage"><svg class="ic"><use href="#i-chart"/></svg>Usage</a>
-      <a href="#/config" data-nav="config"><svg class="ic"><use href="#i-gear"/></svg>Config</a>
+    <nav class="nav-groups">
+      <a href="#/" data-nav="home" data-title="Overview"><svg class="ic"><use href="#i-home"/></svg><span>Overview</span></a>
+      <div class="nav-label">Work</div>
+      <a href="#/hub" data-nav="hub" data-title="Chats"><svg class="ic"><use href="#i-chat"/></svg><span>Chats</span></a>
+      <a href="#/projects" data-nav="projects" data-title="Projects"><svg class="ic"><use href="#i-folder"/></svg><span>Projects</span></a>
+      <a href="#/files" data-nav="files" data-title="Files"><svg class="ic"><use href="#i-file"/></svg><span>Files</span></a>
+      <a href="#/terminal" data-nav="terminal" data-title="Terminal"><svg class="ic"><use href="#i-terminal"/></svg><span>Terminal</span></a>
+      <div class="nav-label">Library</div>
+      <a href="#/chats" data-nav="chats" data-title="History"><svg class="ic"><use href="#i-list"/></svg><span>History</span></a>
+      <a href="#/memory" data-nav="memory" data-title="Memory"><svg class="ic"><use href="#i-brain"/></svg><span>Memory</span></a>
+      <div class="nav-label">System</div>
+      <a href="#/usage" data-nav="usage" data-title="Usage"><svg class="ic"><use href="#i-chart"/></svg><span>Usage</span></a>
+      <a href="#/config" data-nav="config" data-title="Agents & tools"><svg class="ic"><use href="#i-sliders"/></svg><span>Agents &amp; tools</span></a>
+      <a href="#/settings" data-nav="settings" data-title="Settings"><svg class="ic"><use href="#i-gear"/></svg><span>Settings</span></a>
     </nav>
-    <div class="nav-foot">
-      <div id="index-state" class="muted tiny"></div>
-      <div class="row" style="gap:4px;flex-wrap:wrap">
-        <button id="reindex" class="ghost small" title="Scan all tools for new chats now (also runs every 30s)">↻ Re-scan</button>
-        <button id="theme" class="ghost small" title="Switch between system, dark and light theme">◐ <span id="theme-label">System</span></button>
-        <button id="shortcuts-btn" class="ghost small" title="Keyboard shortcuts (?)">⌨ Shortcuts</button>
+    <div class="sidebar-foot">
+      <div id="index-state" class="index-state"></div>
+      <button class="account-btn" id="account-btn" aria-haspopup="menu" aria-expanded="false">
+        <span class="avatar" id="account-avatar">?</span>
+        <span class="account-text"><b id="account-name">Local</b><span id="account-sub">This computer</span></span>
+        <svg class="ic"><use href="#i-more"/></svg>
+      </button>
+      <div class="menu" id="account-menu" role="menu" hidden>
+        <a role="menuitem" href="#/settings">Settings</a>
+        <a role="menuitem" href="#/settings?tab=security" id="menu-security" hidden>Password &amp; passkeys</a>
+        <button role="menuitem" id="theme">Theme: <span id="theme-label">System</span></button>
+        <button role="menuitem" id="reindex">Re-scan chat history</button>
+        <button role="menuitem" id="shortcuts-btn">Keyboard shortcuts</button>
+        <hr>
+        <button role="menuitem" id="sign-out" class="danger" hidden>Sign out</button>
       </div>
     </div>
   </aside>
+  <div class="scrim" id="scrim" hidden></div>
+
   <main id="view"></main>
-  <div id="toast" role="status"></div>
+
+  <!-- Phone tab bar -->
+  <nav class="tabbar" aria-label="Quick navigation">
+    <a href="#/hub" data-nav="hub"><svg class="ic"><use href="#i-chat"/></svg><span>Chats</span></a>
+    <a href="#/projects" data-nav="projects"><svg class="ic"><use href="#i-folder"/></svg><span>Projects</span></a>
+    <a href="#/files" data-nav="files"><svg class="ic"><use href="#i-file"/></svg><span>Files</span></a>
+    <a href="#/terminal" data-nav="terminal"><svg class="ic"><use href="#i-terminal"/></svg><span>Terminal</span></a>
+    <button id="tab-more" aria-label="More" aria-controls="sidebar"><svg class="ic"><use href="#i-more"/></svg><span>More</span></button>
+  </nav>
+
+  <div id="toast" role="status" aria-live="polite"></div>
   <dialog id="modal"><div id="modal-body"></div></dialog>
+  <script src="/vendor/xterm.js"></script>
+  <script src="/vendor/xterm-addon-fit.js"></script>
+  <script src="/vendor/simplewebauthn-browser.umd.min.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

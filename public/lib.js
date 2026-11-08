@@ -2,10 +2,17 @@ export const $ = (s, root = typeof document !== 'undefined' ? document : null) =
 export const $$ = (s, root = typeof document !== 'undefined' ? document : null) => root ? [...root.querySelectorAll(s)] : [];
 
 export async function api(url, { method = 'GET', body } = {}) {
+  const isMutation = ['POST', 'PUT', 'PATCH'].includes(String(method).toUpperCase());
+  const headers = {};
+  let bodyPayload = undefined;
+  if (isMutation || body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+    bodyPayload = JSON.stringify(body !== undefined ? body : {});
+  }
   const res = await fetch(url, {
     method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    headers,
+    body: bodyPayload,
   });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && typeof window !== 'undefined' && !url.startsWith('/api/auth/')) window.location.replace('/login');

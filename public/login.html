@@ -1,8 +1,88 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Conclave</title>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sign in · Conclave</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='9' cy='16' r='5' fill='%23d97757'/><circle cx='23' cy='9' r='5' fill='%234285f4'/><circle cx='23' cy='23' r='5' fill='%2310a37f'/></svg>">
 <style>
-:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#11151c;color:#eef1f7}*{box-sizing:border-box}body{margin:0;min-height:100vh;min-height:100dvh;display:grid;place-items:center;padding:24px;background:radial-gradient(ellipse at top,#242c40,transparent 65%)}main{width:100%;max-width:390px;padding:32px;border:1px solid #384154;background:#1a202b;border-radius:20px;box-shadow:0 24px 80px #0005}.mark{display:flex;gap:7px;margin-bottom:25px}.mark i{width:15px;height:15px;border-radius:50%;background:#d97757}.mark i:nth-child(2){background:#4285f4}.mark i:nth-child(3){background:#10a37f}h1{font-size:28px;letter-spacing:-.6px;margin:0 0 8px}p{color:#b6c0d2;line-height:1.5;margin:0 0 24px}label{display:block;font-size:14px;margin-bottom:7px}input,button{width:100%;font:inherit;font-size:16px;border-radius:10px;min-height:46px;padding:11px 13px}input{color:inherit;background:#111722;border:1px solid #455169;margin-bottom:18px}input:focus{outline:2px solid #82aaff;outline-offset:2px}button{border:0;background:#a9c6ff;color:#102244;font-weight:650;cursor:pointer}button:disabled{opacity:.65;cursor:wait}#error{color:#ffb8ad;line-height:1.5;min-height:22px;margin-top:16px;font-size:14px}.foot{font-size:12px;color:#8491a8;margin:20px 0 0}a{color:#a9c6ff}
-</style></head><body><main><div class="mark" aria-hidden="true"><i></i><i></i><i></i></div><h1>Welcome to Conclave</h1><p>Sign in to your private workspace.</p><form id="login"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required maxlength="200" autofocus><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024"><button id="submit" type="submit">Sign in</button><div id="error" role="alert" aria-live="polite"></div></form><p class="foot">Private access · One owner account</p></main>
+:root{--bg:#f6f7f9;--panel:#fff;--line:#e1e5eb;--text:#171a1f;--muted:#626b78;--accent:#2f6fde;--accent-text:#fff;--err:#c4372b;color-scheme:light;font-family:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif}
+@media (prefers-color-scheme:dark){:root{--bg:#111317;--panel:#181b20;--line:#2a2f37;--text:#e9ebef;--muted:#9aa3b0;--accent:#79a6ff;--accent-text:#0d1730;--err:#ff8a7e;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;min-height:100dvh;display:grid;place-items:center;padding:24px 16px;background:var(--bg);color:var(--text)}
+main{width:100%;max-width:380px}
+.card{padding:32px 28px;border:1px solid var(--line);background:var(--panel);border-radius:18px;box-shadow:0 12px 40px rgb(0 0 0 / .12)}
+.mark{display:flex;gap:6px;margin-bottom:22px}.mark i{width:14px;height:14px;border-radius:50%;background:#d97757}.mark i:nth-child(2){background:#4285f4}.mark i:nth-child(3){background:#10a37f}
+h1{font-size:24px;letter-spacing:-.4px;margin:0 0 6px}
+p{color:var(--muted);line-height:1.5;margin:0 0 22px;font-size:14px}
+label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
+input,button{width:100%;font:inherit;font-size:16px;border-radius:10px;min-height:46px;padding:10px 13px}
+input{color:inherit;background:var(--bg);border:1px solid var(--line);margin-bottom:16px}
+input:focus,button:focus-visible{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 30%,transparent)}
+button{border:1px solid transparent;font-weight:600;cursor:pointer}
+.primary{background:var(--accent);color:var(--accent-text)}
+.secondary{background:transparent;color:var(--text);border-color:var(--line);display:flex;align-items:center;justify-content:center;gap:10px}
+.secondary:hover{background:var(--bg)}
+button:disabled{opacity:.6;cursor:wait}
+.or{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:12px;margin:18px 0}.or::before,.or::after{content:"";flex:1;border-top:1px solid var(--line)}
+#error{color:var(--err);line-height:1.5;min-height:21px;margin-top:14px;font-size:14px}
+.foot{font-size:12px;text-align:center;margin:18px 0 0}
+svg{width:20px;height:20px}
+</style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <div class="mark" aria-hidden="true"><i></i><i></i><i></i></div>
+    <h1>Sign in to Conclave</h1>
+    <p>Your private AI coding council.</p>
+    <button class="secondary" id="passkey" type="button" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M2 20c0-3.3 3.1-6 7-6 1.4 0 2.7.3 3.8.9M17 11a3 3 0 1 1 0 6v4m0-2h2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      Sign in with a passkey
+    </button>
+    <div class="or" id="or" hidden>or use your password</div>
+    <form id="login">
+      <label for="username">Username</label>
+      <input id="username" name="username" autocomplete="username webauthn" required maxlength="200" autofocus>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+      <button class="primary" id="submit" type="submit">Sign in</button>
+    </form>
+    <div id="error" role="alert" aria-live="polite"></div>
+  </div>
+  <p class="foot">Private access · One owner account</p>
+</main>
+<script src="/vendor/simplewebauthn-browser.umd.min.js"></script>
 <script>
-document.getElementById('login').addEventListener('submit',async e=>{e.preventDefault();const b=document.getElementById('submit'),error=document.getElementById('error');b.disabled=true;error.textContent='';try{const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:document.getElementById('username').value,password:document.getElementById('password').value})});const d=await r.json();if(!r.ok)throw Error(d.error||'Unable to sign in');location.replace('/');}catch(e){error.textContent=e.message;}finally{b.disabled=false;}});
-</script></body></html>
+const $ = id => document.getElementById(id);
+const error = $('error');
+const W = window.SimpleWebAuthnBrowser;
+const post = async (url, body) => {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw Error(d.error || 'Unable to sign in');
+  return d;
+};
+$('login').addEventListener('submit', async e => {
+  e.preventDefault();
+  const b = $('submit'); b.disabled = true; error.textContent = '';
+  try { await post('/api/auth/login', { username: $('username').value, password: $('password').value }); location.replace('/'); }
+  catch (err) { error.textContent = err.message; b.disabled = false; }
+});
+if (window.isSecureContext && W && W.browserSupportsWebAuthn()) {
+  $('passkey').hidden = false; $('or').hidden = false;
+  $('passkey').addEventListener('click', async () => {
+    const b = $('passkey'); b.disabled = true; error.textContent = '';
+    try {
+      const { challengeId, options } = await post('/api/auth/passkey/options');
+      let response;
+      try { response = await W.startAuthentication({ optionsJSON: options }); }
+      catch (err) { throw Error(err && err.name === 'NotAllowedError' ? 'Passkey sign-in was cancelled.' : 'Passkey sign-in failed. Try again or use your password.'); }
+      await post('/api/auth/passkey/verify', { challengeId, response });
+      location.replace('/');
+    } catch (err) { error.textContent = err.message; b.disabled = false; }
+  });
+}
+</script>
+</body>
+</html>

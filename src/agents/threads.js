@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { createHash } from 'node:crypto';
 import { getDb, now, newId } from '../db.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -44,9 +45,14 @@ const DEFAULT_SETTINGS = {
 const bus = new EventEmitter();
 bus.setMaxListeners(100);
 const live = new Map();            // msgId -> { content, activity[] } while running
+const submitting = new Set();
 const running = new Map();         // threadId -> { handles:Set, cancelled }
 const workspaceWriters = new Map(); // canonical folder -> promise tail (shared across chats)
 const agentTurns = new Map();       // thread/tool -> promise tail (native session is exclusive)
+
+let lockProvider = null;
+export function setLockProvider(provider) { lockProvider = provider; }
+export function isThreadRunning(threadId) { return running.has(threadId); }
 
 function waitCancel(threadId) {
   const c = running.get(threadId);
@@ -106,7 +112,12 @@ export const onThreadEvent = (threadId, fn) => { const h = e => e.threadId === t
 const emit = (threadId, type, data) => bus.emit('ev', { threadId, type, ...data });
 
 // ---------- storage
-const rowToThread = t => t && ({ ...t, settings: { ...DEFAULT_SETTINGS, ...JSON.parse(t.settings || '{}') }, running: running.has(t.id) });
+const rowToThread = t => t && ({
+  ...t,
+  settings: { ...DEFAULT_SETTINGS, ...JSON.parse(t.settings || '{}') },
+  running: running.has(t.id),
+  otherDeviceWorking: lockProvider ? Boolean(lockProvider.isRemoteWorkingCached?.(t.id)) : false
+});
 const rowToMsg = m => {
   const l = live.get(m.id);
   return {
@@ -632,7 +643,7 @@ async function runBuildReview(thread) {
 
 export function retryMessage(threadId, messageId) {
   const thread = getThread(threadId);
-  if (running.has(threadId)) throw new Error('Agents are still working in this chat.');
+  if (running.has(threadId) || submitting.has(threadId)) throw new Error('Agents are still working in this chat.');
   const m = thread.messages.find(x => x.id === messageId);
   if (!m || m.role !== 'agent') throw new Error('Only agent replies can be retried');
   startJob(threadId, () => runAgent(thread, m.tool, { round: m.round === 'review' ? 'review' : null, instruction: 'Your previous attempt at this reply failed or was stopped. Please answer the latest request again.' }));
@@ -643,7 +654,7 @@ export function retryMessage(threadId, messageId) {
 // the old replies are preserved; use their diffs/Revert before editing if needed.
 export async function editLastUserMessage(threadId, messageId, text) {
   const thread = getThread(threadId);
-  if (running.has(threadId)) throw Object.assign(new Error('Wait for the agents to finish before editing'), { status: 409 });
+  if (running.has(threadId) || submitting.has(threadId)) throw Object.assign(new Error('Wait for the agents to finish before editing'), { status: 409 });
   const last = thread.messages.filter(m => m.role === 'user').at(-1);
   if (!last || last.id !== messageId) throw Object.assign(new Error('Only the latest user message can be edited'), { status: 409 });
   text = String(text || '').trim();
@@ -684,7 +695,9 @@ export async function sendQueuedNow(threadId, qid) {
   if (!q) throw Object.assign(new Error('Queued message not found'), { status: 404 });
   removeQueued(threadId, qid);
   try {
-    return await sendMessage(threadId, q.text, { mode: 'now' });
+    const result = await sendMessage(threadId, q.text, { mode: 'now', requestId: q.requestId || q.id });
+    if (!result.ok) setQueue(threadId, [q, ...getQueue(threadId)]);
+    return result;
   } catch (e) {
     const cur = getQueue(threadId);
     if (!cur.some(x => x.id === q.id)) setQueue(threadId, [q, ...cur]);
@@ -708,7 +721,7 @@ function cleanupRunningMessages(threadId, stopped = false) {
   }
 }
 
-function jobDone(threadId, finishedCtrl = null) {
+async function jobDone(threadId, finishedCtrl = null) {
   const c = running.get(threadId);
   if (finishedCtrl && c && c !== finishedCtrl) return;
   const targetCtrl = finishedCtrl || c;
@@ -718,6 +731,11 @@ function jobDone(threadId, finishedCtrl = null) {
   }
   cleanupRunningMessages(threadId, !!(targetCtrl?.cancelled || targetCtrl?.userStopped));
   running.delete(threadId);
+  if (targetCtrl?.executionClaim && lockProvider) {
+    try { await lockProvider.syncThread?.(threadId); } catch {}
+    try { await lockProvider.releaseLock(threadId, targetCtrl.executionClaim, targetCtrl.cancelled ? 'stopped' : 'done'); }
+    catch (error) { addMessage(threadId, { role: 'system', content: `Could not confirm completion with the Pi: ${error.message}. The claim remains reserved to prevent duplicate work.` }); }
+  }
   // A plain Stop or a Send-Now replacement keeps the queue waiting instead of auto-dequeuing here.
   if (targetCtrl?.userStopped || targetCtrl?.replacing) {
     emit(threadId, 'thread', {});
@@ -735,7 +753,10 @@ function jobDone(threadId, finishedCtrl = null) {
   if (q.length && !waitingInfo(threadId)) {
     const next = q[0];
     setQueue(threadId, q.slice(1));
-    sendMessage(threadId, next.text).catch(e => {
+    sendMessage(threadId, next.text, { requestId: next.requestId || next.id }).then(result => {
+      if (!result.ok) setQueue(threadId, [next, ...getQueue(threadId)]);
+    }).catch(e => {
+      setQueue(threadId, [next, ...getQueue(threadId)]);
       addMessage(threadId, { role: 'system', content: `Queued message failed: ${e.message}` });
       emit(threadId, 'thread', {});
     });
@@ -744,23 +765,48 @@ function jobDone(threadId, finishedCtrl = null) {
   emit(threadId, 'thread', {});
 }
 
-export async function sendMessage(threadId, text, { executePlan = false, mode } = {}) {
+export async function sendMessage(threadId, text, options = {}) {
+  if (submitting.has(threadId)) return { ok: false, busy: true, note: 'A message is already being submitted. Please wait.' };
+  submitting.add(threadId);
+  try { return await sendMessageExclusive(threadId, text, options); }
+  finally { submitting.delete(threadId); }
+}
+async function sendMessageExclusive(threadId, text, { executePlan = false, mode, requestId = newId() } = {}) {
+  if (typeof requestId !== 'string' || !/^[a-zA-Z0-9_-]{8,100}$/.test(requestId)) throw Object.assign(new Error('Invalid request ID'), { status: 400 });
+  const existing = running.get(threadId)?.executionClaim;
+  if ((existing?.requestId === requestId || running.get(threadId)?.requestId === requestId) || getQueue(threadId).some(q => q.requestId === requestId)) return { ok: true, duplicate: true };
+
   if (running.has(threadId)) {
     if (mode !== 'now') {
       const t = String(text || '').trim();
       if (!t) throw new Error('Message is empty');
-      const q = [...getQueue(threadId), { id: newId(), text: t, at: now() }];
+      const q = [...getQueue(threadId), { id: newId(), requestId, text: t, at: now() }];
       setQueue(threadId, q);
       return { ok: true, queued: true, position: q.length };
     }
     stopThread(threadId, { keepQueue: true, replacing: true });
     for (let i = 0; i < 150 && running.has(threadId); i++) await new Promise(r => setTimeout(r, 50));
-    if (running.has(threadId)) jobDone(threadId, running.get(threadId));
+    if (running.has(threadId)) throw Object.assign(new Error('The previous run is still stopping. Wait before sending again.'), { status: 409 });
   }
   const thread = getThread(threadId);
   if (waitingInfo(threadId)) cancelWaiting(threadId);
   text = String(text || '').trim();
   if (!text && !executePlan) throw new Error('Message is empty');
+
+  let executionClaim = null;
+  if (lockProvider && lockProvider.isSeamless?.(thread)) {
+    executionClaim = await lockProvider.acquireLock(threadId, requestId);
+    if (!executionClaim?.acquired) {
+      if (executionClaim?.duplicate && !executionClaim.busy && executionClaim.state === 'done') return { ok: true, duplicate: true, note: executionClaim.note };
+      const otherWorking = Boolean(executionClaim?.busy && executionClaim?.device !== lockProvider?.device);
+      const note = executionClaim?.note || (otherWorking ? '(other device already working)' : '(this device is already working on this chat)');
+      addMessage(threadId, { role: 'system', content: note });
+      emit(threadId, 'thread', { otherDeviceWorking: otherWorking });
+      return { ok: false, busy: !!executionClaim?.busy, duplicate: !!executionClaim?.duplicate, device: executionClaim?.device, note };
+    }
+  }
+  try {
+  if (running.has(threadId)) throw Object.assign(new Error('A run already started while confirming ownership'), { status: 409 });
   if (!thread.messages.length && text) updateThread(threadId, { title: text.replace(/\s+/g, ' ').slice(0, 80) });
   let route;
   if (executePlan) {
@@ -772,11 +818,18 @@ export async function sendMessage(threadId, text, { executePlan = false, mode } 
     route = routeUserMessage(text, thread);
   }
   const team = thread.settings.councilMode === 'build' ? runBuildReview : runCouncil;
-  startJob(threadId, () => route.council ? team(thread) : runDirect(thread, route.tools));
+  startJob(threadId, () => route.council ? team(thread) : runDirect(thread, route.tools), { executionClaim, requestId, submittingOwner: true });
   return { ok: true, route };
+  } catch (error) {
+    if (executionClaim?.token) await lockProvider.releaseLock(threadId, executionClaim, 'failed').catch(() => {});
+    throw error;
+  }
 }
 
 export function stopThread(threadId, { keepQueue = false, replacing = false } = {}) {
+  if (lockProvider?.markDeviceInterrupted) {
+    lockProvider.markDeviceInterrupted(lockProvider.device, threadId).catch(() => {});
+  }
   const c = running.get(threadId);
   if (!c) return false;
   c.cancelled = true;
@@ -1051,10 +1104,22 @@ async function runStep(thread, planId, step, members, available) {
   if (!isCancelled(thread.id)) patchStep(planId, step.id, { status: 'done' });
 }
 
-function startJob(threadId, fn) {
+function startJob(threadId, fn, { executionClaim = null, requestId = newId(), submittingOwner = false } = {}) {
+  if (running.has(threadId) || submitting.has(threadId) && !submittingOwner) throw Object.assign(new Error('A run is already starting in this chat'), { status: 409 });
   const c = ctrl(threadId);
+  c.requestId = requestId;
+  c.executionClaim = executionClaim;
   c.job = Promise.resolve()
-    .then(fn)
+    .then(async () => {
+      const thread = getThread(threadId);
+      if (!c.executionClaim && lockProvider?.isSeamless?.(thread)) {
+        const claim = await lockProvider.acquireLock(threadId, requestId);
+        if (!claim?.acquired) throw new Error(claim?.note || '(other device already working)');
+        c.executionClaim = claim;
+      }
+      if (c.cancelled || running.get(threadId) !== c) return;
+      return fn();
+    })
     .catch(e => addMessage(threadId, { role: 'system', content: `Error: ${e.message}` }))
     .finally(() => jobDone(threadId, c));
 }
@@ -1064,11 +1129,12 @@ export function runPlan(threadId, planId) {
   const thread = getThread(threadId);
   const p = getPlan(planId);
   if (!p || p.thread_id !== threadId) throw Object.assign(new Error('Plan not found'), { status: 404 });
-  if (running.has(threadId)) throw Object.assign(new Error('Agents are already working in this chat'), { status: 409 });
+  if (running.has(threadId) || submitting.has(threadId)) throw Object.assign(new Error('Agents are already working in this chat'), { status: 409 });
   if (!['proposed', 'paused', 'failed'].includes(p.status)) throw Object.assign(new Error(`This plan is ${p.status}`), { status: 409 });
   if (thread.settings.permission === 'read') throw new Error('This chat is read-only. Change "What agents may do" first.');
   if (p.status !== 'proposed') patchPlan(planId, q => q.steps.forEach(s => { if (s.status === 'failed') { s.status = 'queued'; s.error = null; } }));
-  startJob(threadId, () => executePlan(thread, planId));
+  const revision = createHash('sha256').update(JSON.stringify(p.steps.map(s => [s.id, s.status, s.attempts, s.answer]))).digest('hex').slice(0, 24);
+  startJob(threadId, () => executePlan(thread, planId), { requestId: `plan-${planId}-${revision}` });
   return { ok: true };
 }
 

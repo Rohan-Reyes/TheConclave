@@ -10,6 +10,8 @@ import { TextDecoder } from 'node:util';
 export const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 const TEXT_EXTENSION = /\.(?:txt|md|markdown|json|jsonl|ya?ml|toml|csv|tsv|log|ini|cfg|conf|xml|css|scss|less|js|mjs|cjs|ts|tsx|jsx|py|rb|go|rs|c|cc|cpp|h|hpp|java|kt|sql|sh|ps1|bat|cmd|html?|svg|vue|svelte|r|swift|lua|php|gitignore|env|example)$/i;
 const RASTER_EXTENSION = /\.(?:png|jpe?g|webp|gif)$/i;
+const INERT_WEB_EXTENSION = /\.(?:html?|svg|js|mjs|cjs|ts|tsx|jsx|php|cgi|pl|sh|ps1|bat|cmd)$/i;
+const EXECUTABLE_EXTENSION = /\.(?:exe|dll|so|dylib|msi|com|scr|sys)$/i;
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 const key = value => process.platform === 'win32' ? value.toLowerCase() : value;
 const same = (a, b) => key(path.resolve(a)) === key(path.resolve(b));
@@ -65,16 +67,43 @@ function prepareFile(input, limit) {
   const originalName = path.posix.basename(rawName.replace(/\\/g, '/')).replace(/[^\p{L}\p{N}._ -]/gu, '_').slice(0, 100) || 'attachment.txt';
   const bytes = decodeAttachment(input.data, input.encoding ?? 'base64', limit);
   const image = imageType(bytes);
-  if (!image) {
-    if (RASTER_EXTENSION.test(originalName)) throw fail('Image contents do not match a supported PNG, JPEG, GIF or WebP image');
-    if (!TEXT_EXTENSION.test(originalName) && path.extname(originalName)) throw fail('Only supported images and text/source files can be attached');
-    let text;
-    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
-    catch { throw fail('Text attachments must contain valid UTF-8'); }
-    if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) throw fail('Binary content is not supported as a text attachment');
+
+  if (EXECUTABLE_EXTENSION.test(originalName)) {
+    throw fail('Executable files cannot be attached');
   }
+
+  if (image) {
+    // Valid image bytes
+  } else {
+    if (RASTER_EXTENSION.test(originalName)) {
+      throw fail('Image contents do not match a supported PNG, JPEG, GIF or WebP image');
+    }
+    if (/\.txt$/i.test(originalName)) {
+      let text;
+      try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+      catch { throw fail('Text attachments must contain valid UTF-8'); }
+      if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) throw fail('Binary content is not supported as a text attachment');
+    } else if (INERT_WEB_EXTENSION.test(originalName)) {
+      try { new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+      catch { throw fail('Text attachments must contain valid UTF-8'); }
+    }
+    // All other filetypes including PDFs, Office docs, archives, audio, video, datasets are allowed
+  }
+
   const namePart = originalName.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 70) || 'attachment';
-  const filename = `${crypto.randomUUID()}-${namePart}${image ? `.${image}` : '.txt'}`;
+  const ext = path.extname(originalName).toLowerCase();
+  let finalSuffix;
+  if (image) {
+    finalSuffix = `.${image}`;
+  } else if (INERT_WEB_EXTENSION.test(originalName) || /\.txt$/i.test(originalName)) {
+    finalSuffix = '.txt';
+  } else if (ext && /^\.[a-z0-9_-]{1,15}$/.test(ext)) {
+    finalSuffix = ext;
+  } else {
+    finalSuffix = '.bin';
+  }
+
+  const filename = `${crypto.randomUUID()}-${namePart}${finalSuffix}`;
   return { filename, originalName, bytes, isImage: !!image };
 }
 

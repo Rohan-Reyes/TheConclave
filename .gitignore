@@ -12,12 +12,9 @@ desktop.ini
 !.env.example
 scripts/probe-*
 scripts/debug-infer.mjs
+scripts/*.py
 coverage/
 artifacts/
 .DS_Store
 .conclave/
-# Keep local .github settings private, but track the reviewed CI workflow.
-.github/*
-!.github/workflows/
-.github/workflows/*
-!.github/workflows/checks.yml
+.github/
