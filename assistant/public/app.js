@@ -46,7 +46,7 @@ function voiceControls(parent, input) {
 const $ = s => document.querySelector(s);
 document.querySelectorAll('nav a span').forEach(icon=>icon.setAttribute('aria-hidden','true'));
 const root = $('#content');
-const titles = { dashboard: 'Dashboard', chat: 'Chat', notes: 'Notes & coding tasks', today: 'Today', tasks: 'Tasks & Automations', inbox: 'Inbox', connections: 'Connections', telegram: 'Telegram', devices: 'Devices', settings: 'Settings' };
+const titles = { management: 'Management', dashboard: 'Dashboard', chat: 'Chat', notes: 'Notes & coding tasks', today: 'Today', tasks: 'Tasks & Automations', inbox: 'Inbox', connections: 'Connections', telegram: 'Telegram', devices: 'Devices', settings: 'Settings' };
 let me, conversation, dashboardCleanup, editingSchedule, preview, renderVersion = 0;
 const date = n => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZone: me?.timezone || 'Asia/Manila' }).format(new Date(n));
 function toast(text) { $('#toast').textContent = text; $('#toast').hidden = false; clearTimeout(toast.timer); toast.timer = setTimeout(() => $('#toast').hidden = true, 6500); }
@@ -77,6 +77,60 @@ function item(target, title, description) { const d = el('div', undefined, 'list
 function tag(text) { return el('span', text.replaceAll('_', ' '), `tag ${text}`); }
 function actions(target, buttons) { const d = el('div', undefined, 'actions'); d.append(...buttons); target.append(d); }
 function empty(target, text) { target.append(el('p', text, 'empty')); }
+
+// Management: one dedicated Jarvis chat beside scheduled tasks, approvals and execution history.
+async function jarvisConversation() {
+  const chats = await api('/conversations');
+  const found = chats.find(c => c.title === 'Jarvis');
+  return found ? found.id : (await api('/conversations', { title: 'Jarvis' })).id;
+}
+async function management() {
+  const layout = el('div', undefined, 'management-layout'), chatCol = el('section', undefined, 'card management-chat'), side = el('div', undefined, 'management-side');
+  root.append(layout); layout.append(chatCol, side);
+  const id = await jarvisConversation();
+  chatCol.append(el('h2', 'Jarvis'), el('p', 'One ongoing conversation for running your life: ask Jarvis to schedule, remind, brief or follow up.', 'muted'));
+  const messages = el('div', undefined, 'chat-body'); chatCol.append(messages);
+  const show = data => {
+    messages.replaceChildren();
+    if (!data.length) messages.append(el('p', 'Say hello to Jarvis. Try “remind me every weekday at 7 AM to review my calendar”.', 'empty'));
+    for (const m of data) { const d = el('article', undefined, `message ${m.role}`); d.append(el('small', `${m.role === 'user' ? 'You' : 'Jarvis'} · ${date(m.created_at)}`), el('div', m.content)); if (m.role === 'assistant') d.append(button('Read aloud', () => speakReply(m.content, true))); messages.append(d); }
+    messages.scrollTop = messages.scrollHeight;
+  };
+  show(await api(`/messages?conversation=${id}`));
+  const composer = form(chatCol, 'Send ↑', async (b, f) => {
+    const pending = el('article', b.content, 'message user'); messages.append(pending); messages.scrollTop = messages.scrollHeight;
+    const r = await api('/messages', { conversation_id: id, content: b.content }); f.reset(); announceMemories(r.memory_ids);
+    const data = await api(`/messages?conversation=${id}`); show(data); const reply = data.at(-1); if (reply?.role === 'assistant') speakReply(reply.content);
+    await renderSide();
+  }); composer.className = 'composer';
+  const text = field(composer, 'Message Jarvis', 'content', 'textarea'); text.placeholder = 'Ask Jarvis…'; text.maxLength = 12000;
+  text.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); composer.requestSubmit(); } };
+  composer.addButton(); voiceControls(composer, text);
+  async function renderSide() {
+    const [schedules, jobs, inbox] = await Promise.all([api('/schedules'), api('/jobs'), api('/inbox').catch(() => ({ approvals: [] }))]);
+    side.replaceChildren();
+    const pending = (inbox.approvals || []).filter(a => a.state === 'pending');
+    if (pending.length) { const a = card(`Awaiting approval (${pending.length})`, null, side); for (const p of pending.slice(0, 5)) item(a, p.subject, p.kind.replaceAll('_', ' ')); actions(a, [button('Open inbox', () => { location.hash = 'inbox'; })]); }
+    const active = schedules.filter(s => s.status !== 'cancelled');
+    const list = card(`Scheduled tasks (${active.length})`, null, side);
+    for (const s of active) {
+      const d = item(list, s.title, `${s.original_text} · Next ${date(s.next_run)}`); d.append(tag(s.status));
+      actions(d, [
+        button(s.status === 'paused' ? 'Resume' : 'Pause', async () => { await api(`/schedules/${s.id}`, { status: s.status === 'paused' ? 'active' : 'paused' }, 'PATCH'); await renderSide(); }),
+        button('Edit', async () => { editingSchedule = s; location.hash = 'tasks'; }),
+        button('Cancel', async () => { await api(`/schedules/${s.id}`, { status: 'cancelled' }, 'PATCH'); await renderSide(); }, 'danger'),
+      ]);
+    }
+    if (!active.length) empty(list, 'No scheduled tasks yet. Ask Jarvis or add one.');
+    actions(list, [button('+ New scheduled task', () => { editingSchedule = null; location.hash = 'tasks'; }, 'primary')]);
+    const history = card('Recent runs', null, side);
+    for (const j of jobs.slice(0, 8)) { const d = item(history, `${j.kind.replaceAll('_', ' ')} · ${date(j.occurrence_at)}`, j.error || null); d.append(tag(j.state)); }
+    if (!jobs.length) empty(history, 'No runs yet.');
+  }
+  await renderSide();
+  const timer = setInterval(() => { if (!document.hidden) renderSide().catch(() => {}); }, 30000);
+  return () => clearInterval(timer);
+}
 
 async function chat() {
   const layout = el('div', undefined, 'chat-layout'), list = el('div', undefined, 'conversation-list'), main = el('section'); root.append(layout); layout.append(list, main);
@@ -291,8 +345,8 @@ async function render() {
   const version = ++renderVersion, page = Object.hasOwn(titles, location.hash.slice(1)) ? location.hash.slice(1) : 'chat';
   $('#page-title').textContent = titles[page]; document.title = `${titles[page]} · Conclave`;
   document.querySelectorAll('[data-page]').forEach(a => a.classList.toggle('active', a.dataset.page === page));
-  dashboardCleanup?.(); dashboardCleanup = null; root.replaceChildren(); document.body.classList.toggle('wide', page === 'dashboard');
-  try { const cleanup = await ({dashboard,chat,notes,today,tasks,inbox,connections,telegram,devices,settings}[page])(); if (typeof cleanup === 'function') { if (version === renderVersion) dashboardCleanup = cleanup; else cleanup(); } } catch (e) { if (version === renderVersion) { root.append(el('p', e.message, 'error-text')); toast(e.message); } }
+  dashboardCleanup?.(); dashboardCleanup = null; root.replaceChildren(); document.body.classList.toggle('wide', page === 'dashboard' || page === 'management');
+  try { const cleanup = await ({management,dashboard,chat,notes,today,tasks,inbox,connections,telegram,devices,settings}[page])(); if (typeof cleanup === 'function') { if (version === renderVersion) dashboardCleanup = cleanup; else cleanup(); } } catch (e) { if (version === renderVersion) { root.append(el('p', e.message, 'error-text')); toast(e.message); } }
 }
 async function boot() {
   try { me = await api('/me'); $('#login').hidden = true; $('#shell').hidden = false; $('#owner-label').textContent = me.username; $('#zone').textContent = me.timezone; await render(); }

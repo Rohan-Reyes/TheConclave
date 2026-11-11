@@ -43,3 +43,5 @@ body.wide main{max-width:none}
 .voice-controls { display:flex; flex-wrap:wrap; gap:.6rem; align-items:center; margin:.6rem 0; }
 .voice-controls label { display:flex; gap:.4rem; align-items:center; }
 .voice-controls input[type=checkbox] { width:auto; }
+
+.management-layout{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(300px,1fr);gap:18px;align-items:start}.management-chat .chat-body{min-height:52dvh;max-height:62dvh}.management-side .card{margin-bottom:18px}@media(max-width:1050px){.management-layout{grid-template-columns:1fr}}
