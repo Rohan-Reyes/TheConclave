@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#14161a">
+  <script>try{const t=localStorage.getItem("hub-theme");if(t)document.documentElement.dataset.theme=t}catch{}</script>
   <title>Conclave</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='9' cy='16' r='5' fill='%23d97757'/><circle cx='23' cy='9' r='5' fill='%234285f4'/><circle cx='23' cy='23' r='5' fill='%2310a37f'/></svg>">
   <link rel="stylesheet" href="/style.css">
@@ -47,8 +48,8 @@
       </a>
       <button class="icon-btn ghost" id="collapse-sidebar" title="Collapse sidebar" aria-label="Collapse sidebar"><svg class="ic"><use href="#i-panel"/></svg></button>
     </div>
-    <a class="new-chat-btn" href="#/management" data-nav="management" data-title="Management">Jarvis management</a>
     <a class="new-chat-btn" href="#/hub?new=1"><svg class="ic"><use href="#i-plus"/></svg><span>New chat</span></a>
+    <a class="jarvis-pill" href="#/management"><span class="jarvis-dot" aria-hidden="true"></span><span>Ask Jarvis</span></a>
     <button class="search-btn" id="open-search" title="Search everything (Ctrl+K)">
       <svg class="ic"><use href="#i-search"/></svg><span>Search</span><kbd>Ctrl K</kbd>
     </button>
@@ -63,9 +64,12 @@
       <a href="#/chats" data-nav="chats" data-title="History"><svg class="ic"><use href="#i-folder"/></svg><span>History</span></a>
       <div class="nav-label">Jarvis</div>
       <a href="#/management" data-nav="management" data-title="Management"><svg class="ic"><use href="#i-chat"/></svg><span>Management</span></a>
+      <a href="#/today" data-nav="today" data-title="Today"><svg class="ic"><use href="#i-home"/></svg><span>Today</span></a>
+      <a href="#/assistant-inbox" data-nav="inbox" data-title="Inbox"><svg class="ic"><use href="#i-list"/></svg><span>Inbox</span></a>
+      <a href="#/automations" data-nav="automations" data-title="Tasks &amp; automations"><svg class="ic"><use href="#i-chart"/></svg><span>Tasks &amp; automations</span></a>
+      <a href="#/assistant-notes" data-nav="notes" data-title="Notes"><svg class="ic"><use href="#i-file"/></svg><span>Notes</span></a>
       <a href="#/mind" data-nav="mind" data-title="3D Memory"><svg class="ic"><use href="#i-brain"/></svg><span>3D Memory</span></a>
       <a href="#/connectors" data-nav="connectors" data-title="Connectors"><svg class="ic"><use href="#i-sliders"/></svg><span>Connectors</span></a>
-      <a href="#/automations" data-nav="automations" data-title="Tasks & automations"><svg class="ic"><use href="#i-folder"/></svg><span>Tasks & automations</span></a>
       <a href="#/telegram" data-nav="telegram" data-title="Telegram"><svg class="ic"><use href="#i-chat"/></svg><span>Telegram</span></a>
       <div class="nav-label">Coding</div>
       <a href="#/memory" data-nav="memory" data-title="Memory"><svg class="ic"><use href="#i-brain"/></svg><span>Memory</span></a>
@@ -74,6 +78,8 @@
       <a href="#/config" data-nav="config" data-title="Agents & tools"><svg class="ic"><use href="#i-sliders"/></svg><span>Agents &amp; tools</span></a>
       <a href="#/settings" data-nav="settings" data-title="Settings"><svg class="ic"><use href="#i-gear"/></svg><span>Settings</span></a>
     </nav>
+    <div class="nav-label recent-label">Recent</div>
+    <div class="recent-list" id="recent-chats" aria-label="Recent chats"></div>
     <div class="sidebar-foot">
       <div id="index-state" class="index-state"></div>
       <button class="account-btn" id="account-btn" aria-haspopup="menu" aria-expanded="false">

@@ -46,6 +46,49 @@ async def enroll():
     await client.disconnect()
     emit(result)
 
+async def login():
+    """Browser login over JSON lines. Phone, code and password arrive on stdin only and are never
+    written anywhere; the only durable output is the StringSession emitted on success."""
+    from telethon import TelegramClient, errors
+    from telethon.sessions import StringSession
+    async def read():
+        line = await asyncio.wait_for(asyncio.to_thread(sys.stdin.readline), timeout=600)
+        if not line:
+            raise RuntimeError('LoginCancelled')
+        return json.loads(line)
+    first = await read()
+    client = TelegramClient(StringSession(), int(first['api_id']), first['api_hash'], connection_retries=2)
+    await client.connect()
+    try:
+        phone = str(first['phone'])
+        try:
+            await client.send_code_request(phone)
+        except (errors.PhoneNumberInvalidError, errors.PhoneNumberBannedError, errors.PhoneNumberFloodError, errors.FloodWaitError, errors.ApiIdInvalidError) as error:
+            emit({'step': 'error', 'error': type(error).__name__}); return
+        emit({'step': 'code'})
+        attempts = 0
+        while True:
+            message = await read()
+            try:
+                if 'password' in message:
+                    await client.sign_in(password=str(message['password']))
+                else:
+                    await client.sign_in(phone=phone, code=str(message.get('code', '')))
+                break
+            except errors.SessionPasswordNeededError:
+                emit({'step': 'password'})
+            except (errors.PhoneCodeInvalidError, errors.PasswordHashInvalidError) as error:
+                attempts += 1
+                if attempts >= 5:
+                    emit({'step': 'error', 'error': 'TooManyAttempts'}); return
+                emit({'step': 'password' if 'password' in message else 'code', 'error': type(error).__name__})
+            except (errors.PhoneCodeExpiredError, errors.FloodWaitError) as error:
+                emit({'step': 'error', 'error': type(error).__name__}); return
+        me = await client.get_me()
+        emit({'step': 'done', 'session': client.session.save(), 'account_id': me.id})
+    finally:
+        await client.disconnect()
+
 async def serve():
     from telethon import TelegramClient
     from telethon.sessions import StringSession
@@ -144,7 +187,7 @@ async def serve():
 
 if __name__ == '__main__':
     try:
-        asyncio.run(enroll() if '--enroll' in sys.argv else serve())
+        asyncio.run(enroll() if '--enroll' in sys.argv else login() if '--login' in sys.argv else serve())
     except Exception as error:
         emit({'fatal': type(error).__name__})
         sys.exit(1)

@@ -1,4 +1,4 @@
-import { telegramSchema, telegramStatus, configureTelegram, queueTelegram } from './telegram.js';
+import { telegramSchema, telegramStatus, configureTelegram, queueTelegram, TelegramLogin } from './telegram.js';
 import { createServer } from 'node:http';
 import { createServer as createSecureServer } from 'node:https';
 import { readFileSync, unlinkSync, realpathSync } from 'node:fs';
@@ -12,7 +12,7 @@ import { handlePasskeys } from './webauthn.js';
 import { handlePush } from './push.js';
 import { cliInventory } from './cli-model.js';
 import { companionSchema, companionOwner, companionDevice } from './companion.js';
-import { memoryGraph, relevantMemories, recordActivity, categoryIds } from './memory-graph.js';
+import { memoryGraph, mergedMemoryGraph, relevantMemories, recordActivity, categoryIds } from './memory-graph.js';
 import { importMemoryDocument, previewMemoryImport } from './memory-import.js';
 
 const assets = new Map(['index.html', 'app.js', 'dashboard.js', 'theme.js', 'shell.css', 'style.css', 'manifest.webmanifest', 'sw.js', 'icon.svg'].map(name => [
@@ -31,13 +31,14 @@ async function body(req) {
   catch { fail(400, 'Invalid JSON object'); }
 }
 
-export function createApp({ db = openDb(), origin = process.env.APP_ORIGIN || 'http://127.0.0.1:3210', secret = process.env.SESSION_SECRET, encryptionKey = process.env.TOKEN_ENCRYPTION_KEY, sharedIdentity, globalInstructions = () => '', syncSharedMemory = () => {} } = {}) {
+export function createApp({ db = openDb(), origin = process.env.APP_ORIGIN || 'http://127.0.0.1:3210', secret = process.env.SESSION_SECRET, encryptionKey = process.env.TOKEN_ENCRYPTION_KEY, sharedIdentity, globalInstructions = () => '', syncSharedMemory = () => {}, codingSnapshot = null, telegramLoginOptions = {} } = {}) {
   if (!secret || !/^[a-f0-9]{64}$/i.test(secret)) throw new Error('SESSION_SECRET must be a generated 32-byte hex value. Run npm run setup.');
   if (!encryptionKey || !/^[a-f0-9]{64}$/i.test(encryptionKey)) throw new Error('TOKEN_ENCRYPTION_KEY must be an independent generated 32-byte hex value.');
   if (secret === encryptionKey) throw new Error('Session and encryption keys must be independent');
   const originUrl = new URL(origin);
   companionSchema(db);
   telegramSchema(db);
+  const telegramLogin = new TelegramLogin(db, encryptionKey, telegramLoginOptions);
   if (originUrl.origin !== origin || (originUrl.protocol !== 'https:' && !['127.0.0.1', 'localhost', '[::1]'].includes(originUrl.hostname))) throw new Error('APP_ORIGIN must be an exact HTTPS origin or local loopback origin');
   const secure = originUrl.protocol === 'https:';
   const cookieName = secure ? '__Host-jarvis' : 'jarvis_local';
@@ -113,7 +114,12 @@ export function createApp({ db = openDb(), origin = process.env.APP_ORIGIN || 'h
       if (!session) fail(401, 'Please log in');
       db.prepare('UPDATE sessions SET last_seen=? WHERE id=?').run(Date.now(), sessionId);
       db.prepare('UPDATE devices SET last_seen=? WHERE session_id=?').run(Date.now(), sessionId);
-      if (path === '/api/telegram' && method==='GET') {json(telegramStatus(db,encryptionKey));return;}
+      if (path === '/api/telegram' && method==='GET') {json({...telegramStatus(db,encryptionKey),login:telegramLogin.status()});return;}
+      // Owner-only browser login. Codes/passwords pass straight to the bridge and are never persisted or logged.
+      if (path === '/api/telegram/login/start' && method==='POST') {json(await telegramLogin.start(b));return;}
+      if (path === '/api/telegram/login/code' && method==='POST') {json(await telegramLogin.code(b));return;}
+      if (path === '/api/telegram/login/password' && method==='POST') {json(await telegramLogin.password(b));return;}
+      if (path === '/api/telegram/login' && method==='DELETE') {json(telegramLogin.cancel());return;}
       if (path === '/api/telegram/config' && method==='POST') {json(configureTelegram(db,encryptionKey,b));return;}
       if (path === '/api/telegram/outbox' && method==='POST') {json(queueTelegram(db,encryptionKey,b),202);return;}
       if (path === '/api/telegram' && method==='DELETE') {db.prepare("DELETE FROM secrets WHERE key='config:telegram'").run();db.prepare("UPDATE telegram_outbox SET state='cancelled' WHERE state='queued'").run();audit(db,'telegram.disconnected');json({ok:true});return;}
@@ -165,7 +171,14 @@ export function createApp({ db = openDb(), origin = process.env.APP_ORIGIN || 'h
         json({ ok: true, memory_ids: [...asked, ...answered].map(h => h.id) }); return;
       }
       if (path === '/api/memories' && method === 'GET') { json(db.prepare('SELECT * FROM memories ORDER BY updated_at DESC').all()); return; }
-      if (path === '/api/memories/graph' && method === 'GET') { json(memoryGraph(db)); return; }
+      if (path === '/api/memories/graph' && method === 'GET') {
+        if (url.searchParams.get('merged') !== '1') { json(memoryGraph(db)); return; }
+        const includeLocal = url.searchParams.get('include_local') === '1';
+        const updatedSince = Math.max(0, Number(url.searchParams.get('updated_since')) || 0);
+        let coding = null;
+        if (codingSnapshot && url.searchParams.get('coding') !== '0') { try { coding = codingSnapshot(); } catch { coding = null; } }
+        json(mergedMemoryGraph(db, { coding, includeLocal, updatedSince })); return;
+      }
       if (path === '/api/memories/activity' && method === 'GET') {
         const since = Math.max(Number(url.searchParams.get('since')) || 0, Date.now() - 864e5);
         const after = Number(url.searchParams.get('after')) || 0;

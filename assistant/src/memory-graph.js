@@ -201,3 +201,61 @@ export function parsePhrases(text) {
   }
   return out;
 }
+
+// ---------- Merged graph: Jarvis memories + notes + schedules + Conclave coding context ----------
+// `coding` is an optional read-only snapshot supplied by the host ({ memories, threads }), never copied
+// into this database. Every node carries `origin` ('jarvis' | 'conclave') and `updated` (epoch ms).
+const shortLabel = (s, n = 40) => { s = String(s || '').replace(/\s+/g, ' ').trim() || 'Untitled'; return s.length > n ? `${s.slice(0, n - 2)}…` : s; };
+const ms = v => typeof v === 'number' ? v : (Date.parse(v) || 0);
+const projectName = p => String(p).split(/[\\/]/).filter(Boolean).at(-1) || String(p);
+
+export function mergedMemoryGraph(db, { coding = null, includeLocal = false, updatedSince = 0 } = {}) {
+  const base = memoryGraph(db);
+  const nodes = base.nodes.map(n => ({ ...n, origin: 'jarvis', updated: n.updated_at || 0 }));
+  const links = [...base.links];
+  const has = new Set(nodes.map(n => n.id));
+  const add = n => { if (!has.has(n.id)) { has.add(n.id); nodes.push(n); } };
+  const group = (key, label, origin) => { const id = `group:${key}`; if (!has.has(id)) { add({ id, type: 'group', label, origin, updated: 0 }); links.push({ source: 'jarvis', target: id, kind: 'hub' }); } return id; };
+
+  const notes = db.prepare('SELECT id, title, content, updated_at FROM notes ORDER BY updated_at DESC LIMIT 300').all();
+  if (notes.length) { const g = group('notes', 'Notes', 'jarvis'); for (const n of notes) { add({ id: `note:${n.id}`, type: 'note', label: shortLabel(n.title), content: n.content, origin: 'jarvis', updated: n.updated_at }); links.push({ source: g, target: `note:${n.id}`, kind: 'group' }); } }
+  const schedules = db.prepare("SELECT id, title, original_text, status, next_run FROM schedules WHERE status != 'cancelled' ORDER BY next_run LIMIT 300").all();
+  if (schedules.length) { const g = group('schedules', 'Schedules', 'jarvis'); for (const s of schedules) { add({ id: `schedule:${s.id}`, type: 'schedule', label: shortLabel(s.title), content: s.original_text, status: s.status, next_run: s.next_run, origin: 'jarvis', updated: s.next_run }); links.push({ source: g, target: `schedule:${s.id}`, kind: 'group' }); } }
+
+  let excludedLocal = 0;
+  if (coding) {
+    const projects = new Map(); // path -> { seamless, updated }
+    const touch = (path, seamless, updated) => { if (!path) return; const p = projects.get(path) || { seamless: false, updated: 0 }; p.seamless ||= seamless; p.updated = Math.max(p.updated, updated); projects.set(path, p); };
+    for (const t of coding.threads || []) touch(t.cwd, !!t.seamless, ms(t.updated));
+    for (const m of coding.memories || []) if (m.scope && m.scope !== 'global' && m.scope !== 'project') touch(m.scope, String(m.scope).toLowerCase().includes('conclave'), ms(m.updated));
+    const allowed = new Set();
+    for (const [path, p] of projects) { if (p.seamless || includeLocal) allowed.add(path); else excludedLocal++; }
+    if (allowed.size) {
+      const g = group('projects', 'Coding projects', 'conclave');
+      for (const path of allowed) { const p = projects.get(path); add({ id: `project:${path}`, type: 'project', label: shortLabel(projectName(path)), path, local_only: !p.seamless, origin: 'conclave', updated: p.updated }); links.push({ source: g, target: `project:${path}`, kind: 'group' }); }
+    }
+    for (const t of coding.threads || []) {
+      if (t.cwd ? !allowed.has(t.cwd) : !(t.seamless || includeLocal)) continue;
+      add({ id: `chat:${t.id}`, type: 'chat', label: shortLabel(t.title), project: t.cwd || null, origin: 'conclave', updated: ms(t.updated) });
+      links.push(t.cwd ? { source: `project:${t.cwd}`, target: `chat:${t.id}`, kind: 'project' } : { source: group('chats', 'Chats', 'conclave'), target: `chat:${t.id}`, kind: 'group' });
+    }
+    for (const m of coding.memories || []) {
+      // Global coding memories are already mirrored into Jarvis memories (source 'conclave-shared').
+      if (!m.scope || m.scope === 'global') continue;
+      const path = m.scope === 'project' ? null : m.scope;
+      if (path && !allowed.has(path)) continue;
+      if (!path && !includeLocal) continue;
+      const text = `${m.title}\n${m.body || ''}`;
+      add({ id: `coding:${m.id}`, type: 'memory', category: classify(text), label: shortLabel(m.title), content: text, memory_type: m.type, project: path, origin: 'conclave', read_only: true, updated: ms(m.updated) });
+      links.push(path ? { source: `project:${path}`, target: `coding:${m.id}`, kind: 'project' } : { source: group('coding-memories', 'Coding memories', 'conclave'), target: `coding:${m.id}`, kind: 'group' });
+    }
+  }
+
+  const generated_at = Date.now();
+  const meta = { categories: base.categories, generated_at, excluded_local: excludedLocal, include_local: !!includeLocal };
+  if (!updatedSince) return { nodes, links, ...meta };
+  // Incremental: changed nodes, links touching them, and every current id so clients can drop removed nodes.
+  const changed = nodes.filter(n => (n.updated || 0) > updatedSince);
+  const changedIds = new Set(changed.map(n => n.id));
+  return { nodes: changed, links: links.filter(l => changedIds.has(l.source) || changedIds.has(l.target)), ids: nodes.map(n => n.id), incremental: true, updated_since: updatedSince, ...meta };
+}

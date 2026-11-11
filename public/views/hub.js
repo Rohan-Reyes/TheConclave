@@ -1,4 +1,5 @@
 import { agentAvatar } from './agent-avatar.js';
+import { dictation } from './jarvis/api.js';
 import { api, esc, ago, md, toast, modal, copy, $, $$ } from '../lib.js';
 import { memoryForm } from './memory.js';
 import { fileChips, bindFileChips, openWith } from './files.js';
@@ -186,12 +187,9 @@ function renderWelcome(box, params) {
   const draftKey = 'conclave:draft:welcome';
   box.innerHTML = `<div class="hub-welcome">
     <button type="button" class="mobile-chats-btn" id="welcome-show-chats" style="margin-bottom:12px">← View chat history</button>
-    <h1>Your AI coding council</h1>
-    <p class="muted">Talk to Claude Code, Antigravity or Codex in one chat. Switch between them any time without losing context, or combine selected agents and let them debate or build and review together.</p>
-    <div class="grid" style="margin:18px 0">
-      <div class="panel pad"><b>Switch freely</b><div class="small muted">Pick a tool under the message box, or type <code>@codex</code>. The next agent sees everything said so far.</div></div>
-      <div class="panel pad"><b>A real team</b><div class="small muted">Give agents roles (lead, builder, reviewer…). They see each other's usage limits and split the work.</div></div>
-      <div class="panel pad"><b>Council: debate → plan → build</b><div class="small muted">All answer, review each other, the lead writes a plan, and the team builds it step by step.</div></div>
+    <div class="gx-hello">
+      <h1><span class="gx-grad" id="welcome-hello">Hello</span></h1>
+      <p>What should the council work on?</p>
     </div>
     <div class="composer panel quick">
       <div class="seg" id="q-target">${selectionHtml({target:'claude'}, TOOLS)}</div>
@@ -203,7 +201,17 @@ function renderWelcome(box, params) {
         </div>
         <button class="primary" id="q-send">Start chat</button>
       </div>
+    </div>
+    <div class="gx-suggest" id="welcome-suggest">
+      <button type="button" class="gx-suggestion">Review the latest changes in this project for bugs</button>
+      <button type="button" class="gx-suggestion">Plan and build a new feature with the council</button>
+      <button type="button" class="gx-suggestion">Explain how this codebase is organized</button>
+      <button type="button" class="gx-suggestion">Find and fix failing tests</button>
     </div></div>`;
+  api('/api/auth/account').then(acc => {
+    const first = String(acc?.username || '').split(/[\s._@-]/)[0];
+    const el = $('#welcome-hello'); if (el && first) el.textContent = `Hello, ${first[0].toUpperCase()}${first.slice(1)}`;
+  }).catch(() => {});
 
   const qInput = $('#q-input');
   try {
@@ -216,6 +224,7 @@ function renderWelcome(box, params) {
     else store.del(draftKey);
   });
 
+  box.querySelectorAll('.gx-suggestion').forEach(b => b.onclick = () => { qInput.value = b.textContent; qInput.focus(); qInput.dispatchEvent(new Event('input')); });
   const quickSelection = bindSelection($('#q-target'), {target:'claude'}, TOOLS, () => { qInput.focus(); });
   $('#nc2').onclick = () => newChatDialog(params.get('cwd'),quickSelection());
   $('#welcome-show-chats')?.addEventListener('click', () => document.body.classList.add('mobile-list-open'));
@@ -352,6 +361,7 @@ async function renderThread(box, id, list, onListChanged) {
           <button type="button" class="template-btn" id="btn-attach" title="Attach file or image (Codex native images, Claude reads paths, Antigravity file paths)"><svg class="ic" style="color:inherit"><use href="#i-folder"/></svg> Attach</button>
           <button type="button" class="template-btn" id="btn-templates" title="Prompt templates (/plan, /review, /debug, ...)">⚡ Templates</button>
           <button type="button" class="template-btn ghost" id="btn-shortcuts" title="Keyboard shortcuts (?)">⌨</button>
+          <button type="button" class="template-btn ghost" id="btn-mic" title="Dictate" aria-label="Dictate" aria-pressed="false" hidden>🎙</button>
         </div>
         <span class="hint" id="hint" title="Codex native images, Claude reads paths, Antigravity file paths">Enter send · Shift+Enter newline · / templates</span>
         <div class="composer-actions-right">
@@ -364,6 +374,12 @@ async function renderThread(box, id, list, onListChanged) {
 
   const msgs = $('#msgs');
   const input = $('#input');
+  {
+    const micBtn = $('#btn-mic');
+    const mic = dictation(text => { input.value = (input.value ? input.value + ' ' : '') + text; input.dispatchEvent(new Event('input')); input.focus(); },
+      on => { micBtn?.classList.toggle('on', on); micBtn?.setAttribute('aria-pressed', String(on)); });
+    if (mic && micBtn) { micBtn.hidden = false; micBtn.onclick = () => mic.toggle(); }
+  }
   const composer = $('#composer');
   const attBox = $('#composer-attachments');
   const slashBox = $('#slash-popover');

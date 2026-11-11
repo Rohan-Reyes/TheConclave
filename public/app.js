@@ -1,4 +1,10 @@
-import { renderAssistant, leaveAssistant } from './views/assistant.js';
+import { leaveJarvisPage } from './views/jarvis/ui.js';
+import { renderTasks, renderToday } from './views/jarvis/tasks.js';
+import { renderInbox, renderNotes } from './views/jarvis/inbox.js';
+import { renderConnectors, renderDevices, renderJarvisSettings } from './views/jarvis/connectors.js';
+import { renderTelegram } from './views/jarvis/telegram.js';
+import { renderManagement, leaveManagement } from './views/jarvis/management.js';
+import { renderMemory3d, leaveMemory3d } from './views/jarvis/memory3d.js';
 import { renderHome } from './views/home.js';
 import { renderChats } from './views/chats.js';
 import { renderChat } from './views/chat.js';
@@ -6,7 +12,7 @@ import { renderMemory } from './views/memory.js';
 import { renderProjects, renderProject } from './views/projects.js';
 import { renderConfig } from './views/config.js';
 import { renderHub, leaveHub } from './views/hub.js';
-import { api, toast, modal, $, $$ } from './lib.js';
+import { api, toast, modal, esc, $, $$ } from './lib.js';
 import { openPalette } from './views/palette.js';
 import { renderUsage } from './views/usage.js';
 import { renderRunner } from './views/runner.js';
@@ -15,7 +21,16 @@ import { renderTerminal } from './views/terminal.js';
 import { renderSettings, SHORTCUTS } from './views/settings.js';
 
 const routes = [
-  [/^\/(management|mind|connectors|automations|telegram|assistant-notes|assistant-inbox|assistant-settings)$/, 'assistant', renderAssistant],
+  [/^\/(?:management|jarvis)$/, 'management', renderManagement],
+  [/^\/(?:mind|jarvis\/memory)$/, 'mind', renderMemory3d],
+  [/^\/(?:automations|jarvis\/tasks)$/, 'automations', renderTasks],
+  [/^\/(?:today|jarvis\/today)$/, 'today', renderToday],
+  [/^\/(?:assistant-inbox|jarvis\/inbox)$/, 'inbox', renderInbox],
+  [/^\/(?:assistant-notes|jarvis\/notes)$/, 'notes', renderNotes],
+  [/^\/(?:connectors|jarvis\/connectors)$/, 'connectors', renderConnectors],
+  [/^\/jarvis\/devices$/, 'connectors', renderDevices],
+  [/^\/(?:assistant-settings|jarvis\/settings)$/, 'connectors', renderJarvisSettings],
+  [/^\/(?:telegram|jarvis\/telegram)$/, 'telegram', renderTelegram],
   [/^\/?$/, 'home', renderHome],
   [/^\/chats$/, 'chats', renderChats],
   [/^\/chat\/(.+)$/, 'chats', renderChat],
@@ -56,14 +71,19 @@ async function route() {
   const view = $('#view');
   if (!view) return;
   leaveHub();
-  leaveAssistant();
+  leaveJarvisPage();
+  leaveManagement();
+  leaveMemory3d();
   closeDrawer();
   closeAccountMenu();
   document.body.classList.toggle('is-hub', p.startsWith('/hub'));
+  document.body.classList.toggle('is-gx', p === '/management');
+  document.body.classList.toggle('is-m3', p === '/mind' || p === '/jarvis/memory');
+  markRecent(p);
   for (const [re, nav, fn] of routes) {
     const m = p.match(re);
     if (!m) continue;
-    setActiveNav(nav === 'assistant' ? m[1] : nav);
+    setActiveNav(nav);
     view.innerHTML = '<div class="empty">Loading…</div>';
     try { await fn(view, params, ...m.slice(1).map(decodeURIComponent)); }
     catch (e) { view.innerHTML = `<div class="empty">Error: ${e.message}</div>`; }
@@ -72,6 +92,21 @@ async function route() {
   }
   setActiveNav('');
   view.innerHTML = '<div class="empty">Page not found. <a href="#/">Go to Overview</a></div>';
+}
+
+// Sidebar "Recent" list (Gemini-style rail): latest chats, refreshed on navigation.
+let recentAt = 0;
+function markRecent(p) {
+  $$('#recent-chats a').forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + p));
+}
+async function refreshRecent(force = false) {
+  const box = $('#recent-chats'); if (!box || (!force && Date.now() - recentAt < 15000)) return;
+  recentAt = Date.now();
+  try {
+    const list = (await api('/api/threads')).filter(t => !t.settings?.archived).slice(0, 8);
+    box.innerHTML = list.length ? list.map(t => `<a href="#/hub/${encodeURIComponent(t.id)}" title="${esc(t.title || 'Untitled chat')}"><span>${esc(t.title || 'Untitled chat')}</span></a>`).join('') : '<div class="recent-empty">No chats yet</div>';
+    markRecent((location.hash.slice(1) || '/').split('?')[0]);
+  } catch {}
 }
 
 async function refreshIndexState() {
@@ -194,6 +229,8 @@ if (typeof window !== 'undefined') {
   });
 
   window.addEventListener('hashchange', route);
+  window.addEventListener('hashchange', () => refreshRecent());
+  refreshRecent(true);
   route();
   refreshIndexState();
   api('/api/version').then(v=>{ const badge=$('.version-badge'); if(badge && /^\d+\.\d+\.\d+$/.test(v.version)) badge.textContent='v'+v.version; }).catch(()=>{});

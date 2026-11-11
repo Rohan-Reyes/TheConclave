@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { getDb } from './db.js';
 import { promptText } from './config/globals.js';
 import { openDb } from '../assistant/src/db.js';
@@ -13,13 +14,44 @@ export function mountAssistant(app, { authenticated, env = process.env } = {}) {
   db.prepare("DELETE FROM sessions WHERE label='Conclave browser'").run();
   const syncSharedMemory=()=>syncGlobalMemories(getDb(),db);
   syncSharedMemory();
-  const assistant = createApp({ db, origin, syncSharedMemory, globalInstructions:()=>promptText('assistant'), sharedIdentity: req => req.conclaveIdentity });
+  const assistant = createApp({ db, origin, syncSharedMemory, codingSnapshot: () => codingSnapshot(getDb()), globalInstructions:()=>promptText('assistant'), sharedIdentity: req => req.conclaveIdentity });
   app.use('/assistant', (req, res) => {
     if (!req.conclaveIdentity) return res.status(401).json({ error: 'Owner browser session required' });
     if (req.url === '/' && !req.originalUrl.includes('/assistant/')) return res.redirect(308, '/assistant/');
+    if (req.method === 'GET' && /^\/(?:index\.html)?(?:\?.*)?$/.test(req.url)) return sendAssistantRedirect(res);
     assistant.emit('request', req, res);
   });
   return id => db.prepare('DELETE FROM sessions WHERE id=?').run(sessionHash(id, env.SESSION_SECRET));
+}
+
+// The assistant UI now lives inside the Conclave app. /assistant/ (old bookmarks, the installed PWA
+// start URL, OAuth returns and push notification clicks) maps its old #page to the new route.
+// Assets, the API, the manifest and the push service worker stay under /assistant/.
+export const ASSISTANT_ROUTES = { dashboard: 'mind', chat: 'management', management: 'management', notes: 'assistant-notes', today: 'today', tasks: 'automations', inbox: 'assistant-inbox', connections: 'connectors', telegram: 'telegram', devices: 'jarvis/devices', settings: 'assistant-settings' };
+const redirectScript = `(function(){var m=${JSON.stringify(ASSISTANT_ROUTES)};var k=location.hash.slice(1);location.replace('/#/'+(Object.prototype.hasOwnProperty.call(m,k)?m[k]:'management'));})();`;
+const redirectHash = createHash('sha256').update(redirectScript).digest('base64');
+const redirectPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Conclave</title><link rel="manifest" href="/assistant/manifest.webmanifest"><script>${redirectScript}</script><noscript><meta http-equiv="refresh" content="0;url=/#/management"></noscript></head><body><a href="/#/management">Open Jarvis in Conclave</a></body></html>`;
+export function sendAssistantRedirect(res) {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Security-Policy', `default-src 'none'; script-src 'sha256-${redirectHash}'; manifest-src 'self'; base-uri 'none'; frame-ancestors 'none'`);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.end(redirectPage);
+}
+
+// Read-only view of Conclave coding context for the memory map. Nothing is written or copied.
+// Seamless rule matches SyncManager.isSeamless: explicit settings.sync, else paths inside a Conclave folder.
+export function isSeamlessThread(t) {
+  let settings = t.settings;
+  if (typeof settings === 'string') { try { settings = JSON.parse(settings); } catch { settings = {}; } }
+  if (settings && typeof settings.sync === 'boolean') return settings.sync;
+  return String(t.cwd || '').toLowerCase().includes('conclave');
+}
+export function codingSnapshot(coding) {
+  const memories = coding.prepare('SELECT id, title, body, type, scope, updated FROM memories ORDER BY updated DESC LIMIT 2000').all();
+  const threads = coding.prepare('SELECT id, title, cwd, settings, updated FROM threads ORDER BY updated DESC LIMIT 500').all()
+    .map(t => ({ id: t.id, title: t.title, cwd: t.cwd, updated: t.updated, seamless: isSeamlessThread(t) }));
+  return { memories, threads };
 }
 
 export function syncGlobalMemories(coding,assistant) {
