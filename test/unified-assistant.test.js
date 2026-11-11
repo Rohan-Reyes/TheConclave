@@ -1,0 +1,38 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import express from 'express';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createCredentials, mountAuth } from '../src/auth.js';
+import { createApp } from '../assistant/src/server.js';
+import { sessionHash } from '../assistant/src/security.js';
+import { openDb } from '../assistant/src/db.js';
+
+test('one login gates assistant, persists notes, rejects forged identity and revokes both surfaces', async t => {
+  const dir=mkdtempSync(join(tmpdir(),'conclave-unified-'));
+  const file=join(dir,'owner.json');
+  writeFileSync(file,JSON.stringify(await createCredentials('owner','test-password-only-1234')));
+  const db=openDb(':memory:');
+  const app=express();
+  const server=app.listen(0,'127.0.0.1'); await new Promise(r=>server.once('listening',r));
+  const origin=`http://127.0.0.1:${server.address().port}`;
+  mountAuth(app,{root:process.cwd(),env:{CONCLAVE_AUTH_FILE:file},onSessionRevoked:id=>db.prepare('DELETE FROM sessions WHERE id=?').run(sessionHash(id,'11'.repeat(32)))});
+  const assistant=createApp({db,origin,secret:'11'.repeat(32),encryptionKey:'22'.repeat(32),sharedIdentity:req=>req.conclaveIdentity});
+  app.use('/assistant',(req,res)=>assistant.emit('request',req,res));
+  t.after(async()=>{await new Promise(r=>server.close(r));db.close();rmSync(dir,{recursive:true,force:true});});
+  const anon=await fetch(origin+'/assistant/api/notes',{headers:{'X-Conclave-Identity':'owner'},redirect:'manual'});assert.equal(anon.status,303);
+  const login=await fetch(origin+'/api/auth/login',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({username:'owner',password:'test-password-only-1234'})});assert.equal(login.status,200);
+  const cookie=login.headers.get('set-cookie').split(';')[0];
+  const call=(path,body,extra={})=>fetch(origin+path,{headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json'},...(body?{method:'POST',body:JSON.stringify(body)}:{}),...extra});
+  const me=await call('/assistant/api/me');assert.equal((await me.json()).username,'owner');
+  const saved=await call('/assistant/api/notes',{title:'Test task',content:'Build a thing'});assert.equal(saved.status,201);
+  const notes=await call('/assistant/api/notes');assert.equal((await notes.json())[0].content,'Build a thing');
+  const assets=await call('/assistant/');assert.match(await assets.text(),/\/assistant\/app.js/);
+  const forbidden=await call('/assistant/api/notes',{title:'CSRF',content:'No'},{headers:{Cookie:cookie,Origin:'https://other.invalid','Content-Type':'application/json'}});assert.equal(forbidden.status,403);
+  const bypass=await call('/assistant/api/login',{username:'owner',password:'test-password-only-1234'});assert.equal(bypass.status,409);
+  await call('/api/auth/logout',{});
+  assert.equal(db.prepare('SELECT count(*) AS n FROM sessions').get().n,0);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM devices').get().n,0);
+  const revoked=await fetch(origin+'/assistant/api/notes',{headers:{Cookie:cookie},redirect:'manual'});assert.equal(revoked.status,303);
+});

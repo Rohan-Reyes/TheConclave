@@ -103,10 +103,16 @@ export function modal(html, onMount) {
   if (typeof document === 'undefined') return () => {};
   const d = $('#modal');
   if (!d) return () => {};
-  $('#modal-body').innerHTML = html;
+  // Each dialog gets its own body so input/click listeners from a previous
+  // screen cannot fire against a later dialog or retain its private form data.
+  const body = document.createElement('div');
+  body.id = 'modal-body'; body.innerHTML = html;
+  $('#modal-body').replaceWith(body);
+  const close = () => { if ($('#modal-body') === body) d.close(); };
   d.showModal();
-  onMount?.($('#modal-body'), () => d.close());
-  return () => d.close();
+  const mounted = onMount?.(body, close);
+  if (mounted?.catch) mounted.catch(error => toast(error.message, true));
+  return close;
 }
 
 export function renderDiff(lines) {

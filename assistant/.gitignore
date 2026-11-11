@@ -1,0 +1,14 @@
+node_modules/
+.env
+.env.*
+!.env.example
+private/
+backups/
+*.sqlite*
+coverage/
+artifacts/
+playwright-report/
+test-results/
+playwright/.auth/
+browser-profiles/
+*.private.json

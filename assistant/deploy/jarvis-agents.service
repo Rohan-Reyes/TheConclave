@@ -1,0 +1,36 @@
+[Unit]
+Description=Jarvis agent bridge (Claude Code, Codex, Antigravity CLIs, text-only)
+After=network-online.target
+Wants=network-online.target
+Before=jarvis-api.service
+
+[Service]
+Type=simple
+# Runs as the owner account because that is where the CLI logins live.
+User=rasp-pi
+Group=rasp-pi
+SupplementaryGroups=jarvis
+WorkingDirectory=/tmp
+Environment=HOME=/home/rasp-pi
+Environment=PATH=/home/rasp-pi/.local/bin:/opt/jarvis/runtime:/usr/local/bin:/usr/bin:/bin
+Environment=AGENT_BRIDGE_SOCKET=/run/jarvis-agents/bridge.sock
+Environment=AGENT_BRIDGE_GROUP=jarvis
+ExecStart=/opt/jarvis/runtime/node /opt/jarvis/current/src/agent-bridge.js
+RuntimeDirectory=jarvis-agents
+RuntimeDirectoryMode=0755
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# CLIs keep login/session state in the home directory.
+ReadWritePaths=/home/rasp-pi
+# Defence in depth: tools are already disabled, but hide secrets and other projects anyway.
+InaccessiblePaths=-/home/rasp-pi/Conclave -/home/rasp-pi/.ssh -/home/rasp-pi/.cloudflared -/home/rasp-pi/.jarvis-provisioning -/home/rasp-pi/agent-hub -/home/rasp-pi/.config/conclave -/home/rasp-pi/.gnupg -/home/rasp-pi/.local/bin/conclave-memory
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+MemoryMax=2G
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

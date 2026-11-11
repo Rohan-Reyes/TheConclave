@@ -1,9 +1,11 @@
+import { environmentFor, promptText, variableNamesFor } from '../config/globals.js';
+import { recordDetails, detailsStatus } from '../context-updates.js';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { getDb, now, newId } from '../db.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { normPath, HOME } from '../paths.js';
+import { normPath, HOME, DB_PATH, DATA_DIR } from '../paths.js';
 import { runTurn, member, memberIds, isAgentAvailable } from './drivers.js';
 import { snapshot, diffStat, diffText, revert } from './snapshot.js';
 import { denyForMessage, approvalBus, listApprovals } from './approvals.js';
@@ -101,6 +103,7 @@ function checkedSettings(settings) {
   for (const [key, values] of Object.entries({ permission: ['read', 'ask', 'edit', 'full'], approvalMode: ['auto', 'risk', 'manual'], shell: ['direct', 'sandboxed'], councilMode: ['debate', 'build'] })) {
     if (settings[key] !== undefined && !values.includes(settings[key])) throw new Error(`Invalid ${key}`);
   }
+  if (settings.responders !== undefined && (!Array.isArray(settings.responders) || !settings.responders.length || settings.responders.some(m => !memberIds().includes(m)))) throw new Error('Invalid selected agents');
   if (settings.members !== undefined && (!Array.isArray(settings.members) || !settings.members.length || settings.members.some(m => !memberIds().includes(m)))) throw new Error('Invalid council members');
   if (settings.chair !== undefined && !memberIds().includes(settings.chair)) throw new Error('Unknown lead');
   if (settings.roles !== undefined && (!settings.roles || typeof settings.roles !== 'object' || Object.values(settings.roles).some(r => !Object.hasOwn(ROLES, r)))) throw new Error('Invalid team role');
@@ -161,6 +164,7 @@ export function getThread(id) {
   t.questions = listQuestions(id);
   t.waiting = waitingInfo(id);
   t.queue = getQueue(id);
+  t.contextUpdates = detailsStatus(id);
   t.team = activeMembers(t).map(m => ({ id: m, role: roleOf(t, m) }));
   t.credits = Object.fromEntries(memberIds().map(m => [m, outOfCredits(m)]));
   return t;
@@ -324,6 +328,11 @@ function buildPrompt(thread, tool, instruction) {
   const fresh = !s.native_id;
   const unseen = all.filter(m => m.seq > s.last_seen_seq && !(m.role === 'agent' && m.tool === tool));
   const parts = [];
+  const globalPrompt=promptText(tool);
+  const variables=variableNamesFor(tool);
+  if(variables.length)parts.push('Available owner-configured environment variable names: '+variables.join(', ')+'. Read them from your process environment only when needed for the authorized task. Never print credential values or put them in chat, prompts, source code or logs.');
+  if(globalPrompt)parts.push('--- Owner global prompts ---\n'+globalPrompt);
+  parts.push('Context additions: the owner may add details while you work. At task checkpoints, before consequential changes, and before your final reply, call agent-hub-memory get_task_updates (empty arguments) if available. It returns new user details without interrupting your run. Apply them to the current task; keep existing scope and permissions.');
   if (fresh) {
     parts.push(preamble(thread, tool));
     const history = all.filter(m => !(m.role === 'agent' && m.tool === tool && m.round === 'imported'));
@@ -399,7 +408,7 @@ async function runAgentUnlocked(thread, tool, { instruction, round = null, permi
         images: tool === 'codex' ? messageImages(getThread(thread.id).messages.filter(m => m.role === 'user').at(-1)?.content, thread.cwd) : [],
         shell: thread.settings.shell, stallMin: thread.settings.stallMin, isWaiting,
         model: modelOverride || thread.settings.models?.[tool], effort: thread.settings.efforts?.[tool], timeoutMin: thread.settings.timeoutMin,
-        env: { CONCLAVE_THREAD: thread.id, CONCLAVE_MESSAGE: msg.id, CONCLAVE_AGENT: tool, CONCLAVE_PLAN: stepRef?.planId || '', CONCLAVE_STEP: stepRef?.stepId || '' },
+        env: { ...environmentFor(tool), AGENT_HUB_DB: DB_PATH, AGENT_HUB_DATA_DIR: DATA_DIR, CONCLAVE_THREAD: thread.id, CONCLAVE_MESSAGE: msg.id, CONCLAVE_AGENT: tool, CONCLAVE_PLAN: stepRef?.planId || '', CONCLAVE_STEP: stepRef?.stepId || '' },
       }, e => {
         if (e.type === 'delta') { state.content += e.text; emit(thread.id, 'delta', { id: msg.id, text: e.text }); }
         else if (e.type === 'activity') { state.activity.push(e.text); emit(thread.id, 'activity', { id: msg.id, text: e.text }); }
@@ -548,7 +557,7 @@ function routeUserMessage(text, thread) {
   if (names.some(n => n === 'all' || n === 'council')) return { council: true };
   const tools = [...new Set(names.map(n => memberIds().find(t => member(t).mention.includes(n))).filter(Boolean))];
   if (tools.length) return { tools };
-  return thread.target === 'council' ? { council: true } : { tools: [thread.target] };
+  return thread.target === 'council' ? { council: true } : { tools: thread.settings.responders?.includes(thread.target) ? [...new Set(thread.settings.responders)] : [thread.target] };
 }
 
 async function runDirect(thread, tools) {
@@ -690,6 +699,16 @@ export function exportMarkdown(threadId) {
 const getQueue = id => kvGet(`queue:${id}`)?.value || [];
 const setQueue = (id, q) => { if (q.length) kvSet(`queue:${id}`, q); else getDb().prepare('DELETE FROM kv WHERE k = ?').run(`queue:${id}`); emit(id, 'thread', {}); };
 export function removeQueued(threadId, qid) { setQueue(threadId, getQueue(threadId).filter(q => q.id !== qid)); return { ok: true }; }
+export async function sendQueuedDetails(threadId,qid) {
+  const q=getQueue(threadId).find(item=>item.id===qid);
+  if(!q)throw Object.assign(new Error('Queued message not found'),{status:404});
+  removeQueued(threadId,qid);
+  try {
+    const result=await sendMessage(threadId,q.text,{mode:'details',requestId:q.requestId || q.id});
+    if(!result.ok)setQueue(threadId,[q,...getQueue(threadId)]);
+    return result;
+  } catch(error) {setQueue(threadId,[q,...getQueue(threadId)]);throw error;}
+}
 export async function sendQueuedNow(threadId, qid) {
   const q = getQueue(threadId).find(x => x.id === qid);
   if (!q) throw Object.assign(new Error('Queued message not found'), { status: 404 });
@@ -773,6 +792,7 @@ export async function sendMessage(threadId, text, options = {}) {
 }
 async function sendMessageExclusive(threadId, text, { executePlan = false, mode, requestId = newId() } = {}) {
   if (typeof requestId !== 'string' || !/^[a-zA-Z0-9_-]{8,100}$/.test(requestId)) throw Object.assign(new Error('Invalid request ID'), { status: 400 });
+  if(mode==='details' && running.has(threadId)) {getThread(threadId);return recordDetails(threadId,text,requestId,addMessage);}
   const existing = running.get(threadId)?.executionClaim;
   if ((existing?.requestId === requestId || running.get(threadId)?.requestId === requestId) || getQueue(threadId).some(q => q.requestId === requestId)) return { ok: true, duplicate: true };
 
@@ -1294,3 +1314,5 @@ export async function revertMessage(threadId, messageId) {
   emit(threadId, 'message', { message: out });
   return { ok: true };
 }
+
+export function notifyContextRead(threadId) {emit(threadId,'thread',{});}

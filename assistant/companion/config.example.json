@@ -1,0 +1,7 @@
+{
+  "origin": "https://jarvis.aten-systems.site",
+  "token": "<unique-device-credential-from-Devices-page>",
+  "capabilities": ["notify"],
+  "allowed_roots": [],
+  "commands": {}
+}

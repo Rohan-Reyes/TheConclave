@@ -4,10 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import express from 'express';
-
-const WIN_ROOT = ['C:', 'Users', 'User'].join('\\');
-const PI_ROOT = ['', 'home', 'rasp-pi'].join('/');
-
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'conclave-sync-'));
 process.env.AGENT_HUB_DB = path.join(temp, 'test.db');
 process.env.AGENT_HUB_DATA_DIR = path.join(temp, 'data');
@@ -19,46 +15,46 @@ after(() => { threads.setLockProvider(null); getDb().close(); fs.rmSync(temp,{re
 test('translatePath translates Windows and Raspberry Pi Linux paths bidirectionally', () => {
   // Windows to Linux
   assert.equal(
-    translatePath(WIN_ROOT + '\\Conclave\\project-alpha', 'win32', 'linux'),
-    PI_ROOT + '/Conclave/project-alpha'
+    translatePath('C:\\Users\\User\\Conclave\\project-alpha', 'win32', 'linux'),
+    '/home/rasp-pi/Conclave/project-alpha'
   );
   assert.equal(
-    translatePath(['c:', 'users', 'user', 'conclave', 'project-beta'].join('/'), 'win32', 'linux'),
-    PI_ROOT + '/Conclave/project-beta'
+    translatePath('c:/users/user/conclave/project-beta', 'win32', 'linux'),
+    '/home/rasp-pi/Conclave/project-beta'
   );
   assert.equal(
-    translatePath(WIN_ROOT + '\\agent-hub', 'win32', 'linux'),
-    PI_ROOT + '/.local/share/conclave/app'
+    translatePath('C:\\Users\\User\\agent-hub', 'win32', 'linux'),
+    '/home/rasp-pi/.local/share/conclave/app'
   );
   assert.equal(
-    translatePath(WIN_ROOT + '\\Desktop\\notes.txt', 'win32', 'linux'),
-    PI_ROOT + '/Desktop/notes.txt'
+    translatePath('C:\\Users\\User\\Desktop\\notes.txt', 'win32', 'linux'),
+    '/home/rasp-pi/Desktop/notes.txt'
   );
 
   // Embedded path in message content (Windows to Linux)
   assert.equal(
-    translatePath('Check directory ' + WIN_ROOT + '\\Conclave\\site for files', 'win32', 'linux'),
-    'Check directory ' + PI_ROOT + '/Conclave/site for files'
+    translatePath('Check directory C:\\Users\\User\\Conclave\\site for files', 'win32', 'linux'),
+    'Check directory /home/rasp-pi/Conclave/site for files'
   );
 
   // Linux to Windows
   assert.equal(
-    translatePath(PI_ROOT + '/Conclave/project-alpha', 'linux', 'win32'),
-    WIN_ROOT + '\\Conclave\\project-alpha'
+    translatePath('/home/rasp-pi/Conclave/project-alpha', 'linux', 'win32'),
+    'C:\\Users\\User\\Conclave\\project-alpha'
   );
   assert.equal(
-    translatePath(PI_ROOT + '/.local/share/conclave/app', 'linux', 'win32'),
-    WIN_ROOT + '\\agent-hub'
+    translatePath('/home/rasp-pi/.local/share/conclave/app', 'linux', 'win32'),
+    'C:\\Users\\User\\agent-hub'
   );
   assert.equal(
-    translatePath(PI_ROOT + '/Desktop/notes.txt', 'linux', 'win32'),
-    WIN_ROOT + '\\Desktop\\notes.txt'
+    translatePath('/home/rasp-pi/Desktop/notes.txt', 'linux', 'win32'),
+    'C:\\Users\\User\\Desktop\\notes.txt'
   );
 
   // Embedded path in message content (Linux to Windows)
   assert.equal(
-    translatePath('View files in ' + PI_ROOT + '/Conclave/site today', 'linux', 'win32'),
-    'View files in ' + WIN_ROOT + '\\Conclave\\site today'
+    translatePath('View files in /home/rasp-pi/Conclave/site today', 'linux', 'win32'),
+    'View files in C:\\Users\\User\\Conclave\\site today'
   );
 
   // Non-path / falsy edge cases
@@ -74,12 +70,12 @@ test('isSeamless identifies seamless vs local-only threads', () => {
   // Explicit sync: true
   assert.equal(service.isSeamless({ cwd: 'C:\\test', settings: { sync: true } }), true);
   // Explicit sync: false
-  assert.equal(service.isSeamless({ cwd: WIN_ROOT + '\\Conclave\\app', settings: { sync: false } }), false);
+  assert.equal(service.isSeamless({ cwd: 'C:\\Users\\User\\Conclave\\app', settings: { sync: false } }), false);
   // Default: true for Conclave paths
-  assert.equal(service.isSeamless({ cwd: WIN_ROOT + '\\Conclave\\app', settings: {} }), true);
-  assert.equal(service.isSeamless({ cwd: PI_ROOT + '/Conclave/app', settings: {} }), true);
+  assert.equal(service.isSeamless({ cwd: 'C:\\Users\\User\\Conclave\\app', settings: {} }), true);
+  assert.equal(service.isSeamless({ cwd: '/home/rasp-pi/Conclave/app', settings: {} }), true);
   // Default: false for non-Conclave paths
-  assert.equal(service.isSeamless({ cwd: WIN_ROOT + '\\other-project', settings: {} }), false);
+  assert.equal(service.isSeamless({ cwd: 'C:\\Users\\User\\other-project', settings: {} }), false);
   assert.equal(service.isSeamless(null), false);
 });
 
@@ -87,7 +83,7 @@ test('toggleSync toggles thread sync setting between seamless and local only', (
   const service = new SyncService({ device: 'rasp-pi', remoteOrigin: '' });
   const thread = threads.createThread({
     title: 'Test Sync Toggle Thread',
-    cwd: WIN_ROOT + '\\other-project',
+    cwd: 'C:\\Users\\User\\other-project',
     target: 'claude'
   });
 
@@ -144,7 +140,7 @@ test('receive upserts thread, translates paths, and records messages, plans, que
       thread: {
         id: testThreadId,
         title: 'Remote Thread from Pi',
-        cwd: PI_ROOT + '/Conclave/remote-app',
+        cwd: '/home/rasp-pi/Conclave/remote-app',
         target: 'council',
         settings: { permission: 'edit' }
       },
@@ -152,7 +148,7 @@ test('receive upserts thread, translates paths, and records messages, plans, que
         {
           id: testMsgId,
           role: 'user',
-          content: 'Hello from ' + PI_ROOT + '/Conclave/remote-app',
+          content: 'Hello from /home/rasp-pi/Conclave/remote-app',
           created: new Date().toISOString()
         }
       ],
@@ -185,14 +181,14 @@ test('receive upserts thread, translates paths, and records messages, plans, que
     assert.equal(storedThread.title, 'Remote Thread from Pi');
     assert.equal(storedThread.settings.sync, true);
     if (process.platform === 'win32') {
-      assert.equal(storedThread.cwd, WIN_ROOT + '\\Conclave\\remote-app');
+      assert.equal(storedThread.cwd, 'C:\\Users\\User\\Conclave\\remote-app');
     }
 
     // Verify stored message
     const msg = db.prepare('SELECT * FROM thread_messages WHERE id = ?').get(testMsgId);
     assert.ok(msg);
     if (process.platform === 'win32') {
-      assert.match(msg.content, new RegExp(WIN_ROOT.replace(/\\/g, '\\\\') + '\\\\Conclave\\\\remote-app'));
+      assert.match(msg.content, /C:\\Users\\User\\Conclave\\remote-app/);
     }
 
     // Verify idempotency (re-receiving doesn't duplicate)
@@ -219,7 +215,7 @@ test('mountSync exposes HTTP endpoints for status, toggle, and receive', async (
 
   const tempThread = threads.createThread({
     title: 'HTTP Sync Route Test',
-    cwd: WIN_ROOT + '\\other-temp',
+    cwd: 'C:\\Users\\User\\other-temp',
     target: 'claude'
   });
 
@@ -250,7 +246,7 @@ test('mountSync exposes HTTP endpoints for status, toggle, and receive', async (
         thread: {
           id: tempThread.id,
           title: 'Updated title from sync',
-          cwd: PI_ROOT + '/Conclave/other-temp'
+          cwd: '/home/rasp-pi/Conclave/other-temp'
         },
         messages: []
       })
@@ -296,7 +292,7 @@ test('seamless thread rejects duplicate processing and records note (other devic
   const service = new SyncService({ device: 'rasp-pi', remoteOrigin: '' });
   const testThread = threads.createThread({
     title: 'Test Duplicate Prevention Thread',
-    cwd: WIN_ROOT + '\\Conclave\\test-duplicate',
+    cwd: 'C:\\Users\\User\\Conclave\\test-duplicate',
     target: 'claude'
   });
 

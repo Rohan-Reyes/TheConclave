@@ -1,5 +1,6 @@
 import { api, esc, badge, ago, md, toast, modal, renderDiff, $, $$ } from '../lib.js';
 import { memoryForm } from './memory.js';
+import { openPlanQuickView } from './plan.js';
 import { confirmCommandModal } from './runner.js';
 
 export async function renderProjects(view) {
@@ -28,6 +29,7 @@ export async function renderProject(view, params, path) {
       <div style="min-width:0"><h1 style="overflow-wrap:anywhere">${esc(p.name || p.path)}</h1><div class="muted small mono" style="overflow-wrap:anywhere">${esc(p.path)}${p.exists ? '' : ' (folder not found)'}</div></div>
       <div class="row" style="gap:6px;flex-wrap:wrap">
         <a class="btn primary" style="color:#fff" href="#/hub?new=1&cwd=${encodeURIComponent(p.path)}">＋ Council chat here</a>
+        <button id="project-plan-quick">▤ Plan quick view (${(p.plans || []).length})</button>
         <a class="btn" href="#/runner?cwd=${encodeURIComponent(p.path)}">▶ Tasks & Runner</a>
         ${['claude', 'antigravity', 'codex'].map(t => `<button data-launch="${t}" ${p.exists ? '' : 'disabled'}>▶ ${t === 'claude' ? 'Claude' : t === 'codex' ? 'Codex' : 'Antigravity'} in terminal</button>`).join('')}
       </div>
@@ -79,6 +81,7 @@ export async function renderProject(view, params, path) {
     catch (e) { toast(e.message, true); }
   });
   $$('[data-file]').forEach(b => b.onclick = () => editInstructionFile(b.dataset.file, () => renderProject(view, params, path)));
+  $('#project-plan-quick').onclick = () => openPlanQuickView(p.plans || []);
   $('#addmem').onclick = () => memoryForm({ scope: p.path, type: 'project' }, () => renderProject(view, params, path));
 
   // Load runner commands preview

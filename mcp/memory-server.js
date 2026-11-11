@@ -214,5 +214,16 @@ server.registerTool('ask_user', {
   return text_('No answer from the user. Make a sensible choice, state your assumption, and continue.');
 });
 
+server.registerTool('get_task_updates', {
+  title: 'Read added task details',
+  description: 'Read new details added by the owner while this Conclave task runs. Check at milestones and before finishing. Does not interrupt or start an agent. Each agent has its own read cursor.',
+  inputSchema: {},
+}, async () => {
+  const threadId=process.env.CONCLAVE_THREAD, tool=process.env.CONCLAVE_AGENT || actor();
+  if(!threadId)return text_('Task updates are available only inside a Conclave task.');
+  try {const result=await hub(`/api/threads/${encodeURIComponent(threadId)}/context/read`,{tool});return text_(JSON.stringify(result));}
+  catch {return text_('Task update check is unavailable. Continue with known context and check again at your next milestone.');}
+});
+
 getDb();
 await server.connect(new StdioServerTransport());

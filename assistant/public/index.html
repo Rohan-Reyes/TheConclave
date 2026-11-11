@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0d151c"><meta name="description" content="Your private personal assistant">
+  <title>Conclave · Personal assistant</title><link rel="icon" href="/assistant/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/assistant/manifest.webmanifest"><link rel="stylesheet" href="/assistant/style.css">
+  <script src="/assistant/webauthn.js" defer></script><script src="/assistant/dashboard.js" defer></script><script src="/assistant/app.js" defer></script>
+</head>
+<body>
+  <div id="login" class="login-wrap" hidden>
+    <form id="login-form" class="login-card">
+      <div class="brand-orb">J</div><div class="eyebrow">YOUR PRIVATE WORKSPACE</div><h1>Welcome to Conclave</h1>
+      <p>Your conversations, commitments and connections. One place.</p>
+      <label>Username<input name="username" autocomplete="username" required></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+      <label>Device name<input name="device_name" placeholder="My laptop" autocomplete="off"></label>
+      <button class="primary" type="submit">Sign in securely →</button><button id="passkey-login" type="button">Sign in with a passkey</button>
+      <p class="muted">One owner. No public registration. Create your account with the local setup command.</p>
+    </form>
+  </div>
+  <div id="shell" hidden>
+    <aside><a class="brand" href="#chat"><span class="brand-orb small">J</span><span>Conclave<small>PERSONAL ASSISTANT</small></span></a>
+      <nav aria-label="Main navigation"><a href="/#/hub"><span>⌨</span>Coding workspace</a>
+        <a href="#dashboard" data-page="dashboard"><span>✺</span>Dashboard</a>
+        <a href="#chat" data-page="chat"><span>◈</span>Chat</a>
+        <a href="#notes" data-page="notes"><span>✎</span>Notes & coding tasks</a>
+        <a href="#today" data-page="today"><span>◷</span>Today</a>
+        <a href="#tasks" data-page="tasks"><span>☷</span>Tasks & Automations</a>
+        <a href="#inbox" data-page="inbox"><span>▣</span>Inbox</a>
+        <div class="nav-label">YOUR WORKSPACE</div>
+        <a href="#connections" data-page="connections"><span>⌘</span>Connections</a>
+        <a href="#devices" data-page="devices"><span>▤</span>Devices</a>
+        <a href="/#/config?tab=variables"><span>⌘</span>Skills & global settings</a>
+        <a href="#settings" data-page="settings"><span>⚙</span>Settings</a>
+      </nav>
+      <div class="sidebar-footer"><span class="status-dot"></span>Private by design<p id="owner-label"></p><button id="logout" class="subtle">Sign out</button></div>
+    </aside>
+    <main><header><div><div class="eyebrow">PERSONAL WORKSPACE</div><h1 id="page-title">Chat</h1></div><div class="header-right"><span id="zone" class="pill"></span><span class="avatar">J</span></div></header>
+      <div id="content" aria-live="polite"></div>
+      <footer>Conclave · Your space, your permissions.</footer>
+    </main>
+  </div>
+  <div id="toast" role="status" hidden></div>
+</body></html>

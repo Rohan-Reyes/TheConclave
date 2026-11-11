@@ -20,7 +20,7 @@ let isoServer, isoTmp;
 if (isIsolated) {
   isoTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'conclave-iso-'));
   const dbPath = path.join(isoTmp, 'test.db');
-  const env = { ...process.env, AGENT_HUB_DATA_DIR: isoTmp, AGENT_HUB_DB: dbPath, CONCLAVE_PORT: '4788', CONCLAVE_REMOTE_ORIGIN: '', CONCLAVE_DEVICE: 'rasp-pi' };
+  const env = { ...process.env, AGENT_HUB_DATA_DIR: isoTmp, AGENT_HUB_DB: dbPath, CONCLAVE_PORT: '4788' };
   threadId = execFileSync('node', ['scripts/seed-demo.mjs'], { env, encoding: 'utf8', cwd: root }).trim();
   isoServer = spawn('node', ['server.js'], { env, cwd: root, stdio: 'ignore', windowsHide: true });
   base = 'http://127.0.0.1:4788';
@@ -31,11 +31,6 @@ if (isIsolated) {
     } catch {}
     await new Promise(r => setTimeout(r, 100));
   }
-  const claim = await fetch(`${base}/api/sync/lock/${threadId}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ device: 'laptop', requestId: 'synthetic-other-device-working' })
-  });
-  assert.equal(claim.ok, true, 'Isolated remote-working fixture must be accepted');
 }
 
 if (!threadId) throw new Error('Supply a synthetic preview thread ID; do not capture private chats.');
@@ -311,10 +306,6 @@ try {
     record('conversation has usable space', layout.msgsHeight >= minMsgs, {
       width: tc.width, height: tc.height, msgsHeight: layout.msgsHeight, minRequired: minMsgs, layout
     });
-    if (isIsolated) {
-      const note = await evaluate('window.__checkHitTarget(document.querySelector("#remote-working"))');
-      record('Other device already working note is visible', !!note?.reachable, note);
-    }
 
     // 3. Chat list & onboarding initial states
     const initStates = await evaluate(`({
@@ -632,7 +623,7 @@ try {
   monitorDesktopMutations = true;
   const welcomeChecks = [];
 
-  for (const route of ['', 'chats', 'memory', 'projects', 'files', 'config', 'usage']) {
+  for (const route of ['', 'chats', 'memory', 'projects', 'config', 'usage']) {
     await navigate(route);
     await waitFor('!document.querySelector("#view")?.innerText.includes("Loading")');
     const hasErr = await evaluate('!!document.querySelector("#view .error")');

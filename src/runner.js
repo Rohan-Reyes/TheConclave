@@ -1,6 +1,7 @@
 // User-started project tasks. Commands are saved explicitly or discovered from
 // package.json; reconnecting to a log never starts a process.
 import fs from 'node:fs';
+import { environmentFor } from './config/globals.js';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, execFile, execFileSync } from 'node:child_process';
@@ -103,8 +104,9 @@ function customCommand(input) {
 }
 
 export class ProjectRunner {
-  constructor({ storagePath = path.join(DATA_DIR, 'runner.json'), maxLogBytes = 256 * 1024, maxJobs = 50 } = {}) {
+  constructor({ storagePath = path.join(DATA_DIR, 'runner.json'), maxLogBytes = 256 * 1024, maxJobs = 50, environment = () => ({}) } = {}) {
     this.storagePath = storagePath;
+    this.environment = environment;
     this.maxLogBytes = Math.max(1024, Math.min(1024 * 1024, maxLogBytes));
     this.maxJobs = Math.max(1, maxJobs);
     this.jobs = new Map();
@@ -236,7 +238,7 @@ export class ProjectRunner {
     try {
       job.process = spawn(command.executable, command.args, { cwd, shell: false,
         detached: process.platform !== 'win32', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' } });
+        env: { ...Object.fromEntries(Object.entries(process.env).filter(([key])=>!['TOKEN_ENCRYPTION_KEY','SESSION_SECRET','CONCLAVE_AUTH_FILE'].includes(key))), ...this.environment(), FORCE_COLOR: '0', NO_COLOR: '1' } });
       job.pid = job.process.pid || null;
       job.process.once('spawn', () => { if (!job.stopping) job.status = 'running'; this.emit(job, { type: 'status', job: publicJob(job) }); });
       for (const stream of ['stdout', 'stderr']) {
@@ -336,7 +338,7 @@ export class ProjectRunner {
 }
 
 let defaultRunner;
-export const getRunner = () => defaultRunner ||= new ProjectRunner();
+export const getRunner = () => defaultRunner ||= new ProjectRunner({environment:()=>environmentFor('runner')});
 export const shutdownRunner = () => defaultRunner?.shutdown() || Promise.resolve();
 
 export function mountRunner(app, wrap, runner = getRunner(), { shutdownHooks = true } = {}) {

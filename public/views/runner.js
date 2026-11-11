@@ -2,6 +2,12 @@ import { api, esc, toast, modal, copy, $, $$ } from '../lib.js';
 
 let activeEventSource = null;
 
+export function mergeRunnerLogs(previous = [], incoming = []) {
+  return [...new Map([...previous,...incoming].map(line=>[line.seq,line])).values()].sort((a,b)=>a.seq-b.seq);
+}
+function logHtml(logs) {return logs.map(l=>`<div class="log-line ${esc(l.stream)}"><span class="log-seq">${l.seq}</span>${esc(l.text)}</div>`).join('') || '<div class="muted tiny">Waiting for output…</div>';}
+
+
 export function closeActiveRunnerEvents() {
   if (activeEventSource) {
     activeEventSource.close();
@@ -22,12 +28,22 @@ function statusBadge(status, exitCode) {
   return `<span class="badge ${cls}">${esc(label)}</span>`;
 }
 
+// A separate dialog preserves an already-open Runner and its live log container.
+function commandDialog(html, mount) {
+  const dialog=document.createElement('dialog');
+  dialog.setAttribute('aria-label','Confirm command execution');
+  const content=document.createElement('div');content.className='command-confirm-body';content.innerHTML=html;
+  dialog.append(content);document.body.append(dialog);
+  dialog.addEventListener('close',()=>dialog.remove(),{once:true});
+  dialog.showModal();mount(content,()=>dialog.close());
+}
+
 // Confirmation modal before first run of any unconfirmed command
 export function confirmCommandModal(cmd, onConfirm) {
   const fullArgs = Array.isArray(cmd.args) ? cmd.args.join(' ') : '';
   const fullCmd = `${cmd.executable} ${fullArgs}`.trim();
 
-  modal(`
+  commandDialog(`
     <div class="row" style="justify-content:space-between;align-items:center">
       <h2 style="margin:0">Confirm Command Execution</h2>
       <button class="icon-btn" id="cfm-x">✕</button>
@@ -112,6 +128,7 @@ export async function mountRunnerContainer(container, cwd, onSendToChat) {
     return;
   }
 
+  if (!container.isConnected) return;
   const commands = cmdData.commands || [];
   let jobs = jobData.jobs || [];
 
@@ -131,7 +148,7 @@ export async function mountRunnerContainer(container, cwd, onSendToChat) {
                 ${c.script ? `<div class="tiny mono muted" style="overflow:hidden;text-overflow:ellipsis">${esc(c.script)}</div>` : ''}
               </div>
               <button class="small primary" data-act="run-cmd" data-id="${esc(c.id)}" ${c.unavailable ? 'disabled title="' + esc(c.error || '') + '"' : ''}>Run</button>
-            </div>`).join('') || '<div class="empty small">No npm scripts or saved commands.</div>'}
+            </div>`).join('') || '<div class="empty small">This folder has no package.json scripts or saved commands. Use Custom Command above, or choose the project folder containing package.json.</div>'}
         </div>
 
         <div class="runner-pane-title" style="margin-top:14px">Recent Tasks (${jobs.length})</div>
@@ -192,7 +209,7 @@ export async function mountRunnerContainer(container, cwd, onSendToChat) {
 
       <div class="runner-log-pane" id="log-pane">
         <div class="runner-log-stream" id="log-stream">
-          ${(job.logs || []).map(l => `<div class="log-line ${esc(l.stream)}"><span class="log-seq">${l.seq}</span>${esc(l.text)}</div>`).join('') || '<div class="muted tiny">Waiting for output…</div>'}
+          ${logHtml(job.logs || [])}
         </div>
       </div>`;
 
@@ -251,7 +268,11 @@ export async function mountRunnerContainer(container, cwd, onSendToChat) {
       const event = JSON.parse(ev.data);
       if (event.type === 'snapshot' || event.type === 'status') {
         const j = event.job;
-        Object.assign(job, j);
+        const logs=mergeRunnerLogs(job.logs,j.logs || []);
+        Object.assign(job, j, {logs});
+        const streamEl=$('#log-stream',pane);
+        if(streamEl){const atBottom=logPane.scrollHeight-logPane.scrollTop-logPane.clientHeight<50;streamEl.innerHTML=logHtml(logs);if(atBottom)logPane.scrollTop=logPane.scrollHeight;}
+
         const badgeEl = $('#job-status-badge', pane);
         if (badgeEl) badgeEl.innerHTML = statusBadge(job.status, job.exitCode);
         // Update sidebar item badge
@@ -260,10 +281,12 @@ export async function mountRunnerContainer(container, cwd, onSendToChat) {
       } else if (event.type === 'log') {
         const l = event.log;
         if (!job.logs) job.logs = [];
+        if(job.logs.some(existing=>existing.seq===l.seq))return;
         job.logs.push(l);
         job.lastSeq = l.seq;
         const streamEl = $('#log-stream', pane);
         if (streamEl) {
+          streamEl.querySelector('.muted')?.remove();
           const atBottom = logPane.scrollHeight - logPane.scrollTop - logPane.clientHeight < 50;
           const lineEl = document.createElement('div');
           lineEl.className = `log-line ${l.stream}`;
@@ -284,6 +307,7 @@ export async function mountRunnerContainer(container, cwd, onSendToChat) {
     $$('.runner-job-item', container).forEach(el => el.classList.toggle('active', el.dataset.jobId === id));
     try {
       const cur = await api(`/api/runner/jobs/${id}?cwd=` + encodeURIComponent(cwd));
+      if(selectedJobId!==id || !container.isConnected)return;
       renderJobPane(cur);
     } catch {
       renderJobPane(null);
@@ -350,28 +374,30 @@ export async function mountRunnerContainer(container, cwd, onSendToChat) {
   });
 
   if (selectedJobId) selectJob(selectedJobId);
+  else renderJobPane(null);
 }
 
 // Add Custom Command Modal
-function addCommandModal(cwd, onAdded) {
+function addCommandModal(cwd, onAdded, onCancel) {
   modal(`
     <h2 style="margin:0">Add Custom Command</h2>
     <div class="muted small" style="margin-bottom:8px">Saved commands run directly under <code>${esc(cwd)}</code>.</div>
     <label class="field">Label (optional)<input id="ac-label" placeholder="e.g. Build Bundle or Run Tests"></label>
     <label class="field">Executable<input id="ac-exe" class="mono" placeholder="e.g. node or C:\\path\\to\\python.exe"></label>
-    <label class="field">Arguments (separated by spaces)<input id="ac-args" class="mono" placeholder="e.g. scripts/build.js --prod"></label>
+    <label class="field">Arguments (JSON array or space-separated)<input id="ac-args" class="mono" placeholder="e.g. scripts/build.js --prod"></label>
     <div class="modal-actions">
       <button id="ac-cancel">Cancel</button>
       <button class="primary" id="ac-save">Save Command</button>
     </div>`, async (root, close) => {
-    $('#ac-cancel', root).onclick = close;
+    $('#ac-cancel', root).onclick = () => {close();onCancel?.();};
     $('#ac-save', root).onclick = async () => {
       const executable = $('#ac-exe', root).value.trim();
       if (!executable) return toast('Executable is required', true);
       const label = $('#ac-label', root).value.trim() || executable;
       const rawArgs = $('#ac-args', root).value.trim();
-      const args = rawArgs ? rawArgs.split(/\s+/).filter(Boolean) : [];
       try {
+        const args = rawArgs.startsWith('[') ? JSON.parse(rawArgs) : rawArgs ? rawArgs.split(/\s+/).filter(Boolean) : [];
+        if(!Array.isArray(args) || args.some(arg=>typeof arg!=='string')) throw new Error('Arguments must be an array of strings');
         await api('/api/runner/commands', {
           method: 'POST',
           body: { cwd, label, executable, args }
@@ -387,22 +413,21 @@ function addCommandModal(cwd, onAdded) {
 // Open Runner in a Modal Dialog directly from chat header
 export function openRunnerModal(cwd, onSendToChat) {
   if (!cwd) return toast('No working folder set for this chat', true);
-  modal(`
-    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
-      <div class="row" style="align-items:center;gap:8px">
-        <h2 style="margin:0">Project Tasks & Runner</h2>
-        <span class="mono tiny muted">${esc(cwd)}</span>
-      </div>
-      <button class="icon-btn" id="rm-close">✕</button>
-    </div>
-    <div id="rm-content" style="min-height:420px"></div>`, (root, close) => {
-    $('#rm-close', root).onclick = () => { closeActiveRunnerEvents(); close(); };
-    mountRunnerContainer($('#rm-content', root), cwd, text => {
-      closeActiveRunnerEvents();
-      close();
-      onSendToChat?.(text);
+  const open = folder => modal(`
+    <div class="row" style="justify-content:space-between"><h2>Project Tasks & Runner</h2><button id="rm-close" aria-label="Close Runner">✕</button></div>
+    <label class="field">Project folder<input id="rm-folder" class="mono" value="${esc(folder)}"></label>
+    <div class="row" style="gap:8px;margin:8px 0"><button id="rm-refresh">Load / Refresh</button><button id="rm-add">＋ Custom Command</button><a href="#/runner?cwd=${encodeURIComponent(folder)}" id="rm-full">Open full Runner</a></div>
+    <div id="rm-content" style="min-height:280px"></div>`, (root, close) => {
+      const finish = () => {closeActiveRunnerEvents();close();};
+      const currentFolder=()=>$('#rm-folder',root).value.trim();
+      const load=()=>mountRunnerContainer($('#rm-content',root),currentFolder(),text=>{finish();onSendToChat?.(text);});
+      $('#rm-close',root).onclick=finish;
+      $('#rm-full',root).onclick=finish;
+      $('#rm-refresh',root).onclick=()=>{ $('#rm-full',root).href='#/runner?cwd='+encodeURIComponent(currentFolder());load(); };
+      $('#rm-add',root).onclick=()=>{const selected=currentFolder();finish();addCommandModal(selected,()=>open(selected),()=>open(selected));};
+      load();
     });
-  });
+  open(cwd);
 }
 
 function formatBytes(bytes) {

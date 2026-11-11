@@ -1,0 +1,9 @@
+# Jarvis only. Never replace Conclave's tunnel configuration.
+tunnel: <dedicated-jarvis-tunnel-uuid>
+credentials-file: /etc/jarvis/tunnel.json
+ingress:
+  - hostname: jarvis.aten-systems.site
+    service: http://127.0.0.1:3210
+    originRequest:
+      httpHostHeader: jarvis.aten-systems.site
+  - service: http_status:404

@@ -14,7 +14,7 @@ test('fresh server starts with isolated data, enforces host/origin and returns J
   });
   fs.mkdirSync(path.join(temp, 'profile'));
   const child = spawn(process.execPath, ['--no-warnings', 'server.js'], { cwd: process.cwd(), windowsHide: true,
-    env: { ...process.env, CONCLAVE_PORT: String(port), USERPROFILE: path.join(temp, 'profile'), HOME: path.join(temp, 'profile'),
+    env: { ...process.env, CONCLAVE_AUTH_FILE: '', CONCLAVE_PUBLIC_ORIGIN: '', CONCLAVE_INTERNAL_TOKEN: '', CONCLAVE_ASSISTANT_ENABLED: '0', CONCLAVE_PORT: String(port), USERPROFILE: path.join(temp, 'profile'), HOME: path.join(temp, 'profile'),
       AGENT_HUB_DB: path.join(temp, 'test.db'), AGENT_HUB_DATA_DIR: path.join(temp, 'data') }, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; child.stdout.on('data', d => output += d); child.stderr.on('data', d => output += d);
   const closed = new Promise(resolve => child.on('close', resolve));

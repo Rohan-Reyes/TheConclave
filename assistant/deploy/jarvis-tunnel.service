@@ -1,0 +1,21 @@
+[Unit]
+Description=Jarvis dedicated Cloudflare Tunnel
+After=network-online.target jarvis-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jarvis-tunnel
+Group=jarvis-tunnel
+ExecStart=/usr/bin/cloudflared tunnel --config /etc/jarvis/cloudflared.yml run
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

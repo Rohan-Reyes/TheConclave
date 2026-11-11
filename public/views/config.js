@@ -1,4 +1,5 @@
 import { api, esc, badge, toast, modal, renderDiff, $, $$ } from '../lib.js';
+import { renderVariables, renderGlobalPrompts } from './globals.js';
 import { editInstructionFile } from './projects.js';
 
 const HUB = 'agent-hub-memory';
@@ -7,15 +8,19 @@ const TOOL_OF = { claude: 'claude', antigravity: 'antigravity', codex: 'codex' }
 export async function renderConfig(view, params) {
   const tab = params.get('tab') || 'mcp';
   view.innerHTML = `
-    <div class="head"><div><h1>Config</h1><div class="muted">MCP servers, skills and global instruction files across all tools. Every change shows a diff first and keeps a backup.</div></div></div>
+    <div class="head"><div><h1>Config</h1><div class="muted">Manage agents, install skills, store shared variables and set global prompts. MCP and native instruction edits show a diff and keep a backup.</div></div></div>
     <div class="tabs">
       <button data-tab="agents" class="${tab === 'agents' ? 'on' : ''}">Agents</button>
       <button data-tab="mcp" class="${tab === 'mcp' ? 'on' : ''}">MCP servers</button>
+      <button data-tab="variables" class="${tab === 'variables' ? 'on' : ''}">Variables & secrets</button>
+      <button data-tab="prompts" class="${tab === 'prompts' ? 'on' : ''}">Global prompts</button>
       <button data-tab="skills" class="${tab === 'skills' ? 'on' : ''}">Skills</button>
       <button data-tab="instructions" class="${tab === 'instructions' ? 'on' : ''}">Global instructions</button>
     </div>
     <div id="tab"></div>`;
   $$('[data-tab]').forEach(b => b.onclick = () => { location.hash = '#/config?tab=' + b.dataset.tab; });
+  if (tab === 'variables') return renderVariables($('#tab'));
+  if (tab === 'prompts') return renderGlobalPrompts($('#tab'));
   if (tab === 'agents') return renderAgents($('#tab'));
   if (tab === 'skills') return renderSkills($('#tab'));
   if (tab === 'instructions') return renderInstructions($('#tab'));
@@ -142,8 +147,10 @@ function mcpDialog(name, server, preselect, targets, onDone, { lockName = false,
 
 async function renderSkills(box) {
   const { targets, skills } = await api('/api/skills');
+  const openInstaller=()=>skillInstallDialog(targets,()=>renderSkills(box));
   const tkeys = Object.keys(targets);
   box.innerHTML = `
+    <div class="head"><div><h2>Installed skills</h2><p class="muted">Install a reviewed skill package for your chosen tools.</p></div><button id="skill-install" class="primary">＋ Install skill</button></div>
     <div class="panel scroll-x">
       <table class="matrix">
         <tr><th>Skill</th>${tkeys.map(t => `<th class="c" title="${esc(targets[t].dir)}">${esc(targets[t].label)}</th>`).join('')}</tr>
@@ -154,6 +161,7 @@ async function renderSkills(box) {
       </table>
     </div>
     <p class="tiny muted">A skill is a folder with a SKILL.md file. Copying never overwrites an existing skill.</p>`;
+  $('#skill-install',box).onclick=openInstaller;
   $$('[data-copy]', box).forEach(b => b.onclick = async () => {
     try {
       await api('/api/skills/copy', { method: 'POST', body: { folder: b.dataset.copy, from: b.dataset.from, to: b.dataset.to } });
@@ -250,4 +258,25 @@ function agentDialog(a, onDone) {
       } catch (e) { toast(e.message, true); }
     };
   });
+}
+
+function skillInstallDialog(targets,reload) {
+  modal(`<h2>Install skill</h2><label class="field">Skill name<input id="install-name" placeholder="my-skill" pattern="[a-z0-9-]+"></label>
+    <label class="field">Source<select id="install-mode"><option value="paste">Paste SKILL.md</option><option value="folder">Folder on this server</option></select></label>
+    <label class="field" id="install-content-field">SKILL.md<textarea id="install-content" rows="8" placeholder="---\nname: my-skill\ndescription: What this skill does\n---\nInstructions..."></textarea></label>
+    <label class="field" id="install-source-field" hidden>Source folder<input id="install-source" placeholder="/absolute/path/to/skill-folder"></label>
+    <fieldset><legend>Install for</legend><div class="row">${Object.entries(targets).map(([id,target])=>`<label><input class="install-target" type="checkbox" value="${esc(id)}"> ${esc(target.label)}</label>`).join('')}</div></fieldset>
+    <div id="install-preview" aria-live="polite"></div><div class="modal-actions"><button id="install-cancel">Cancel</button><button id="install-review">Review package</button><button id="install-apply" class="primary" disabled>Install reviewed package</button></div>`,(root,close)=>{
+      let pending, revision=0;
+      const invalidate=()=>{revision++;pending=null;$('#install-apply',root).disabled=true;$('#install-preview',root).replaceChildren();};
+      root.addEventListener('input',invalidate);root.addEventListener('change',invalidate);
+      $('#install-mode',root).onchange=()=>{const folder=$('#install-mode',root).value==='folder';$('#install-source-field',root).hidden=!folder;$('#install-content-field',root).hidden=folder;};
+      $('#install-cancel',root).onclick=close;
+      $('#install-review',root).onclick=async()=>{const reviewedRevision=revision;try{
+        const input={name:$('#install-name',root).value.trim(),targets:$$('.install-target:checked',root).map(el=>el.value),...($('#install-mode',root).value==='folder'?{source:$('#install-source',root).value.trim()}:{content:$('#install-content',root).value})};
+        const preview=await api('/api/skills/install/preview',{method:'POST',body:input});if(revision!==reviewedRevision || !root.isConnected)return;pending={...input,digest:preview.digest};
+        $('#install-preview',root).innerHTML=`<h3>${esc(preview.name)}</h3><p>${esc(preview.description)}</p><p class="tiny muted">${preview.files.length} files. Existing skills are never overwritten. Installation does not run package scripts.</p><ul>${preview.files.map(file=>`<li class="mono tiny">${esc(file.path)} · ${file.bytes} bytes</li>`).join('')}</ul>`;$('#install-apply',root).disabled=false;
+      }catch(error){toast(error.message,true);}};
+      $('#install-apply',root).onclick=async()=>{if(!pending)return;$('#install-apply',root).disabled=true;try{await api('/api/skills/install',{method:'POST',body:pending});close();toast('Skill installed; new sessions load it');await reload();}catch(error){invalidate();toast(error.message,true);}};
+    });
 }

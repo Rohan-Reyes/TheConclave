@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import readline from 'node:readline';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -21,7 +22,7 @@ export function walk(dir, test, out = [], depth = 0, maxDepth = 6) {
   let entries;
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
   for (const e of entries) {
-    const p = dir + '\\' + e.name;
+    const p = path.join(dir, e.name);
     if (e.isDirectory()) { if (depth < maxDepth) walk(p, test, out, depth + 1, maxDepth); }
     else if (test(p, e.name)) out.push(p);
   }

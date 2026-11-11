@@ -37,7 +37,7 @@ function persist(file, config) {
 const validPasskey = p => p && typeof p.id === 'string' && p.id.length <= 1024 && typeof p.publicKey === 'string'
   && Number.isInteger(p.counter) && p.counter >= 0;
 
-export function mountAuth(app, { root, env = process.env, now = Date.now, sessionMs = 12 * 3600000, maxAttempts = 10, windowMs = 15 * 60000 } = {}) {
+export function mountAuth(app, { root, env = process.env, now = Date.now, sessionMs = 12 * 3600000, maxAttempts = 10, windowMs = 15 * 60000, onSessionRevoked = () => {} } = {}) {
   const file = env.CONCLAVE_AUTH_FILE;
   if (!file) {
     if (env.CONCLAVE_PUBLIC_ORIGIN) throw new Error('CONCLAVE_AUTH_FILE is required when exposing a public origin');
@@ -76,13 +76,14 @@ export function mountAuth(app, { root, env = process.env, now = Date.now, sessio
     if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(ip)) return false;
     try { return ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(`http://${req.get('host')}`).hostname); } catch { return false; }
   };
+  const revoke = id => { sessions.delete(id); onSessionRevoked(id); };
   const session = req => {
     const raw = (req.get('cookie') || '').split(';').map(s => s.trim()).find(s => s.startsWith(COOKIE + '='))?.slice(COOKIE.length + 1);
     if (!raw || raw.length > 256) return null;
     const [id, sig, extra] = raw.split('.');
     if (extra !== undefined || !id || !sig || !equal(sig, signature(id))) return null;
     const s = sessions.get(id);
-    if (!s || s.expires <= now()) { sessions.delete(id); return null; }
+    if (!s || s.expires <= now()) { revoke(id); return null; }
     s.lastSeen = now();
     return id;
   };
@@ -94,8 +95,8 @@ export function mountAuth(app, { root, env = process.env, now = Date.now, sessio
   const expectedOrigin = req => publicOrigin || `${req.protocol}://${req.get('host')}`;
   const rpID = req => new URL(expectedOrigin(req)).hostname;
   const startSession = (req, res, method) => {
-    for (const [id, s] of sessions) if (s.expires <= now()) sessions.delete(id);
-    if (sessions.size >= 64) sessions.delete(sessions.keys().next().value);
+    for (const [id, s] of sessions) if (s.expires <= now()) revoke(id);
+    if (sessions.size >= 64) revoke(sessions.keys().next().value);
     const id = crypto.randomBytes(32).toString('base64url');
     sessions.set(id, { expires: now() + sessionMs, created: now(), lastSeen: now(), userAgent: String(req.get('user-agent') || '').slice(0, 200), method });
     res.set('Set-Cookie', cookie(`${id}.${signature(id)}`, Math.floor(sessionMs / 1000)));
@@ -199,7 +200,7 @@ export function mountAuth(app, { root, env = process.env, now = Date.now, sessio
   });
 
   app.post('/api/auth/logout', (req, res) => {
-    const id = session(req); if (id) sessions.delete(id);
+    const id = session(req); if (id) revoke(id);
     res.set('Set-Cookie', cookie('', 0)); res.json({ ok: true });
   });
 
@@ -228,14 +229,14 @@ export function mountAuth(app, { root, env = process.env, now = Date.now, sessio
       config.passwordUpdated = new Date(now()).toISOString();
       persist(file, config);
       // Everyone else is signed out; this browser stays signed in.
-      for (const id of [...sessions.keys()]) if (id !== req.sessionId) sessions.delete(id);
+      for (const id of [...sessions.keys()]) if (id !== req.sessionId) revoke(id);
       res.json({ ok: true, signedOutOthers: true });
     } catch (e) { next(e); }
   });
 
   app.post('/api/auth/sessions/revoke-others', requireSession, (req, res) => {
     let count = 0;
-    for (const id of [...sessions.keys()]) if (id !== req.sessionId) { sessions.delete(id); count++; }
+    for (const id of [...sessions.keys()]) if (id !== req.sessionId) { revoke(id); count++; }
     res.json({ ok: true, count });
   });
 
@@ -295,7 +296,12 @@ export function mountAuth(app, { root, env = process.env, now = Date.now, sessio
   });
 
   app.use((req, res, next) => {
-    if (internal(req) || session(req)) return next();
+    const authenticated = session(req);
+    if (authenticated) {
+      req.conclaveIdentity = { id: authenticated, username: config.username, expires: sessions.get(authenticated).expires };
+      return next();
+    }
+    if (internal(req)) return next();
     if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Sign in required' });
     if (req.path.startsWith('/vendor/simplewebauthn')) return next();   // the sign-in page needs it
     res.redirect(303, '/login');

@@ -5,7 +5,8 @@ import { api, esc, ago, toast, modal, $, $$ } from '../lib.js';
 export const SHORTCUTS = [
   ['<kbd>Ctrl</kbd> <kbd>K</kbd>', 'Search chats, projects and memories'],
   ['<kbd>Enter</kbd>', 'Send a message (or queue it while agents work)'],
-  ['<kbd>Ctrl</kbd> <kbd>Enter</kbd>', 'Send now, even while agents are working'],
+  ['<kbd>Alt</kbd> <kbd>M</kbd>', 'Add details without stopping the active AI; focus the composer if empty'],
+  ['<kbd>Ctrl</kbd> <kbd>Enter</kbd>', 'Add details while the AI works; otherwise send a message'],
   ['<kbd>Shift</kbd> <kbd>Enter</kbd>', 'New line in the message box'],
   ['<kbd>/</kbd>', 'Message templates (at the start of a message)'],
   ['<kbd>Ctrl</kbd> <kbd>B</kbd>', 'Show or hide the chat list'],

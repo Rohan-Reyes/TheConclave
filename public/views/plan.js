@@ -1,3 +1,4 @@
+import { agentAvatar } from './agent-avatar.js';
 // Council plan board, questions from agents, and the team (roles + usage) panel.
 import { api, esc, ago, toast, modal, $, $$ } from '../lib.js';
 
@@ -123,9 +124,8 @@ export function usageOf(id, limits, credits, now = Date.now()) {
 export function teamStripHtml(team, tools, limits, credits, busyIds = new Set()) {
   return team.map(m => {
     const u = usageOf(m.id, limits, credits);
-    const initial = m.id === 'copilot' ? 'C' : (tools[m.id] || m.id)[0];
     return `<span class="mate ${m.id} ${u.out ? 'out' : ''} ${busyIds.has(m.id) ? 'busy' : ''}" title="${esc(tools[m.id] || m.id)} · ${esc(ROLE_LABEL[m.role] || m.role)} · ${esc(u.text)}">
-      <span class="av ${m.id}">${esc(initial)}</span>
+      ${agentAvatar(m.id,tools[m.id] || m.id)}
       <span class="mate-txt"><b>${esc(tools[m.id] || m.id)}</b><span>${esc(ROLE_LABEL[m.role] || m.role)}</span></span>
       ${u.pct != null ? `<span class="mini-meter ${u.pct >= 90 ? 'hot' : u.pct >= 70 ? 'warm' : ''}"><i style="width:${Math.min(100, u.pct)}%"></i></span>` : ''}
     </span>`;
@@ -142,7 +142,7 @@ export async function teamDialog(t, tools, save) {
     <div class="team-rows">${Object.entries(tools).map(([id, label]) => {
       const u = usageOf(id, limits, credits);
       return `<div class="team-row">
-        <span class="mate ${id}"><span class="av ${id}">${id === 'copilot' ? 'C' : esc(label[0])}</span><b>${esc(label)}</b></span>
+        <span class="mate ${id}">${agentAvatar(id,label)}<b>${esc(label)}</b></span>
         <select data-role="${id}">${Object.entries(ROLE_LABEL).map(([k, v]) => `<option value="${k}" ${roleOf(id) === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
         <span class="team-usage">${u.pct != null ? `<span class="mini-meter wide ${u.pct >= 90 ? 'hot' : u.pct >= 70 ? 'warm' : ''}"><i style="width:${Math.min(100, u.pct)}%"></i></span>` : ''}<span class="tiny muted">${esc(u.text)}</span></span>
       </div>`;
@@ -160,4 +160,19 @@ export async function teamDialog(t, tools, save) {
       close(); toast('Team saved');
     };
   });
+}
+
+// Read-only plan overview: opening this never starts or changes a plan.
+export function openPlanQuickView(plans = [], tools = {}) {
+  modal(`<div class="row" style="justify-content:space-between"><h2>Project plan · Quick view</h2><button id="plan-quick-close" aria-label="Close plan quick view">✕</button></div>
+    <div class="plan-quick-body">${plans.map(p => {
+      const steps=p.steps || [], done=steps.filter(s=>['done','skipped'].includes(s.status)).length;
+      return `<section class="panel pad"><h3>${esc(p.summary || 'Project plan')}</h3><p>${esc(PLAN_LABEL[p.status] || p.status)} · ${done}/${steps.length} steps complete</p>
+      ${p.thread_title ? `<a href="#/hub/${encodeURIComponent(p.thread_id)}" data-plan-chat>Open ${esc(p.thread_title)}</a>` : ''}
+      ${p.error ? `<p class="err">${esc(p.error)}</p>`:''}
+      <ol>${steps.map(s=>`<li class="plan-quick-step"><b>${esc(s.title)}</b><div class="small muted">${esc(s.status)} · ${esc(tools[s.assignee || s.owner] || s.assignee || s.owner || 'Unassigned')}${s.dependsOn?.length ? ` · After ${esc(s.dependsOn.join(', '))}`:''}</div>${s.error ? `<div class="err">${esc(s.error)}</div>`:''}</li>`).join('')}</ol></section>`;
+    }).join('') || '<div class="empty">No project plan yet. Plans appear here after one is created in a chat.</div>'}</div>`,(root,close)=>{
+      $('#plan-quick-close',root).onclick=close;
+      $$('[data-plan-chat]',root).forEach(link=>link.addEventListener('click',close));
+    });
 }

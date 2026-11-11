@@ -36,6 +36,12 @@ export function listProjects() {
     if (r.last > p.last) p.last = r.last;
     map.set(r.cwd, p);
   }
+  // Include hub-only workspaces; they may have no imported CLI transcripts.
+  const hub = getDb().prepare("SELECT cwd, COUNT(*) AS n, MAX(updated) AS last FROM threads WHERE cwd != '' GROUP BY cwd").all();
+  for (const row of hub) {
+    const p = map.get(row.cwd) || {path:row.cwd,name:path.basename(row.cwd),tools:{},total:0,last:''};
+    p.tools.hub=row.n;p.total+=row.n;if(row.last>p.last)p.last=row.last;map.set(row.cwd,p);
+  }
   const mem = getDb().prepare("SELECT scope, COUNT(*) AS n FROM memories WHERE scope != 'global' GROUP BY scope").all();
   for (const m of mem) {
     const p = map.get(m.scope) || { path: m.scope, name: path.basename(m.scope), tools: {}, total: 0, last: '' };
@@ -79,6 +85,7 @@ export async function projectDetail(p) {
     name: path.basename(dir),
     exists: fs.existsSync(dir),
     chats,
+    plans: getDb().prepare(`SELECT p.*, t.title AS thread_title FROM plans p JOIN threads t ON t.id=p.thread_id WHERE t.cwd=? ORDER BY p.updated DESC LIMIT 30`).all(dir).map(p=>({...p,steps:JSON.parse(p.steps || '[]')})),
     memories: listMemories({ scope: dir }).filter(m => m.scope !== 'global'),
     git: fs.existsSync(dir) ? await gitStatus(dir) : null,
     files: fs.existsSync(dir) ? instructionFiles(dir) : [],

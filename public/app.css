@@ -309,3 +309,26 @@ body.is-hub .hub-more-actions summary::-webkit-details-marker, body.is-hub .hub-
   body.is-hub .hub-head-sub { flex-wrap: wrap !important; overflow: visible; }
   body.is-hub .hub-head .cwd-input { flex-basis: 220px !important; width: 220px !important; }
 }
+
+/* Keep streaming output and working indicators from shrinking the composer. */
+body.is-hub .hub-main { min-height: 0; }
+body.is-hub .msgs { min-height: 0; flex: 1 1 0; overflow-y: auto; }
+body.is-hub #composer { flex: 0 0 auto; min-height: 146px; max-height: min(60dvh, 460px); overflow-y: auto; }
+body.is-hub #composer > textarea { flex: 0 0 auto; min-height: 48px !important; }
+body.is-hub #working { flex: 0 0 auto; max-height: 72px; overflow-y: auto; }
+body.is-hub #queue { flex: 0 0 auto; max-height: 100px; overflow-y: auto; }
+body.is-hub #open-plan { display: inline-flex !important; }
+.plan-quick-body { max-height: 65dvh; overflow-y: auto; display: grid; gap: 12px; }
+.plan-quick-step { margin: 10px 0; overflow-wrap: anywhere; }
+#q-target, #nc-target, #target { flex-wrap: wrap; }
+.command-confirm-body { padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; }
+.globals-item { grid-template-columns: minmax(0,1fr) auto; }
+.prompt-preview { white-space: pre-wrap; max-height: 180px; overflow: auto; overflow-wrap: anywhere; }
+@media(max-width:600px) { .globals-item { grid-template-columns: minmax(0,1fr); } .tabs { flex-wrap: wrap; } }
+body.is-hub #details-delivery { flex: 0 0 auto; padding: 3px 12px; max-height: 48px; overflow-y: auto; }
+
+/* Reply cards keep their content height as streaming output fills the scroller. */
+body.is-hub .msgs > * { flex-shrink: 0; }
+body.is-hub .msgs .hm.running { min-height: 88px; }
+.av .agent-logo { width: 72%; height: 72%; object-fit: contain; display: block; filter: brightness(0) invert(1); }
+.av.brand-avatar { color: white; }

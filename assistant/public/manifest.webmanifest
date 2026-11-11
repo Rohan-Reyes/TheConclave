@@ -1,0 +1,1 @@
+{"id": "/assistant/", "name": "Conclave", "short_name": "Conclave", "start_url": "/assistant/#dashboard", "scope": "/assistant/", "display": "standalone", "background_color": "#0d151c", "theme_color": "#0d151c", "icons": [{"src": "/assistant/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]}

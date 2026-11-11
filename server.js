@@ -1,4 +1,7 @@
 import express from 'express';
+import { mountGlobals } from './src/config/globals.js';
+import { readTaskUpdates } from './src/context-updates.js';
+import { mountAssistant } from './src/unified-assistant.js';
 import path from 'node:path';
 import { ROOT } from './src/paths.js';
 import { getDb, ftsQuery } from './src/db.js';
@@ -35,14 +38,18 @@ app.use((req, res, next) => {
   }
   next();
 });
+app.get('/vendor/simplewebauthn-browser.umd.min.js', (_req, res) => res.sendFile(path.join(ROOT, 'node_modules', '@simplewebauthn', 'browser', 'dist', 'bundle', 'index.umd.min.js')));
+let revokeAssistantSession = () => {};
+const auth = mountAuth(app, { root: ROOT, onSessionRevoked: id => revokeAssistantSession(id) });
+revokeAssistantSession = mountAssistant(app, { authenticated: auth.enabled });
 app.use(express.json({ limit: '6mb' }));
-mountAuth(app, { root: ROOT });
 app.use(express.static(path.join(ROOT, 'public')));
 
 const wrap = fn => (req, res) => Promise.resolve().then(() => fn(req, res)).then(
   data => { if (!res.headersSent) res.json(data ?? { ok: true }); },
   err => res.status(err.status || 400).json({ error: err.message }));
 
+mountGlobals(app, wrap);
 mountRunner(app, wrap);
 mountFileExplorer(app, wrap);
 const terminalService = mountTerminal(app, wrap);
@@ -59,14 +66,14 @@ function chatOr404(id) {
 app.get('/api/stats', wrap(() => {
   const db = getDb();
   return {
-    version: '1.2.0',
+    version: '2.0.0-preview',
     chats: db.prepare('SELECT tool, COUNT(*) AS n, MAX(updated) AS last FROM chats GROUP BY tool').all(),
     memories: db.prepare('SELECT COUNT(*) AS n FROM memories').get().n,
     projects: db.prepare("SELECT COUNT(DISTINCT project) AS n FROM chats WHERE project != ''").get().n,
     index: indexState,
   };
 }));
-app.get('/api/version', wrap(() => ({ version: '1.2.0', name: 'agent-hub' })));
+app.get('/api/version', wrap(() => ({ version: '2.0.0-preview', name: 'conclave' })));
 app.post('/api/reindex', wrap(() => runIndex()));
 
 // ---- chats
@@ -150,12 +157,16 @@ app.get('/api/mcp/hub-server', wrap(() => ({
   name: 'agent-hub-memory',
   server: { type: 'stdio', command: process.execPath, args: ['--no-warnings', path.join(ROOT, 'mcp', 'memory-server.js')], env: {} },
 })));
+app.post('/api/skills/install/preview', wrap(req => skills.previewInstall(req.body)));
+app.post('/api/skills/install', wrap(req => skills.installSkill(req.body)));
 app.get('/api/skills', wrap(() => skills.listSkills()));
 app.post('/api/skills/copy', wrap(req => skills.copySkill(req.body.folder, req.body.from, req.body.to)));
 
 // ---- hub chats (direct chat, tool switching, council)
 app.get('/api/threads', wrap(() => threads.listThreads()));
 app.post('/api/threads', wrap(req => threads.createThread(req.body)));
+app.post('/api/threads/:id/context/read', wrap(req => {const updates=readTaskUpdates(req.params.id, req.body.tool);threads.notifyContextRead(req.params.id);return updates;}));
+app.post('/api/threads/:id/queue/:qid/details', wrap(req => threads.sendQueuedDetails(req.params.id,req.params.qid)));
 app.get('/api/threads/:id', wrap(req => threads.getThread(req.params.id)));
 app.patch('/api/threads/:id', wrap(req => threads.updateThread(req.params.id, req.body)));
 app.delete('/api/threads/:id', wrap(req => { threads.deleteThread(req.params.id); return { ok: true }; }));

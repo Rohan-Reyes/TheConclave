@@ -311,7 +311,7 @@ const PARSERS = { claude: claudeParser, antigravity: agyParser, codex: codexPars
 // mark children so the memory MCP server won't let them start councils (no loops).
 function childEnv(extra = {}) {
   const env = { ...process.env, CONCLAVE_CHILD: '1', ...extra };
-  for (const k of Object.keys(env)) if (k === 'CLAUDECODE' || k.startsWith('CLAUDE_CODE_')) delete env[k];
+  for (const k of Object.keys(env)) if (['TOKEN_ENCRYPTION_KEY','SESSION_SECRET','CONCLAVE_AUTH_FILE'].includes(k) || k === 'CLAUDECODE' || k.startsWith('CLAUDE_CODE_')) delete env[k];
   return env;
 }
 

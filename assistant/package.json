@@ -1,0 +1,28 @@
+{
+  "name": "jarvis-private-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "setup": "node src/setup.js",
+    "start": "node --env-file-if-exists=.env src/server.js",
+    "worker": "node --env-file-if-exists=.env src/worker.js",
+    "memory:import": "node --env-file-if-exists=.env scripts/import-memories.mjs",
+    "test:dashboard": "node scripts/dashboard-check.mjs",
+    "test": "node --test --test-concurrency=1",
+    "check": "node --check src/server.js && node --check src/worker.js && node --check src/backup.js && node --check src/agent-bridge.js && node --check src/cli-model.js && node --check src/memory-graph.js && node --check src/memory-import.js && node --check public/app.js && node --check public/dashboard.js && node --check scripts/import-memories.mjs && node --check scripts/dashboard-check.mjs",
+    "backup": "node --env-file-if-exists=.env src/backup.js"
+  },
+  "dependencies": {
+    "@simplewebauthn/browser": "^14.0.0",
+    "@simplewebauthn/server": "^14.1.0",
+    "luxon": "^3.7.2",
+    "web-push": "^4.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0"
+  }
+}

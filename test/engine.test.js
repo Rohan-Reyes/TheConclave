@@ -17,6 +17,7 @@ import fs from 'node:fs';
 let p=''; for await (const c of process.stdin) p+=c;
 const role=process.argv[2];
 const task=p.split('--- Your task now ---').at(-1);
+if(task.includes('capture-global-fixture'))fs.writeFileSync('captured-global.json',JSON.stringify({prompt:p,credential:process.env.FIXTURE_ACCESS==='synthetic-fixture-value',master:!!process.env.TOKEN_ENCRYPTION_KEY}));
 if (task.includes('detached-grandchild')) {
   const sleeper=spawn(process.execPath,['-e','setTimeout(()=>{},4000)'],{stdio:'inherit'});
   fs.writeFileSync('grandchild.pid',String(sleeper.pid));
@@ -412,4 +413,48 @@ test('failover: when every candidate is genuinely out of credits the chat waits 
     assert.ok(done.messages.some(m=>m.role==='system' && /All agents are out of credits/.test(m.content)));
     T.cancelWaiting(t.id);
   } finally { F.clearExhausted('ea'); F.clearExhausted('eb'); }
+});
+
+test('selected agent combinations answer directly and solo selection stays solo', async () => {
+  const t=chat({responders:['ea','eb']});
+  await T.sendMessage(t.id,'selection fixture'); await idle(t.id);
+  assert.deepEqual(T.getThread(t.id).messages.filter(m=>m.role==='agent').map(m=>m.tool),['ea','eb']);
+  T.updateThread(t.id,{target:'eb',settings:{responders:['eb'],members:['eb'],chair:'eb'}});
+  await T.sendMessage(t.id,'solo fixture');await idle(t.id);
+  assert.deepEqual(T.getThread(t.id).messages.filter(m=>m.role==='agent').map(m=>m.tool),['ea','eb','eb']);
+  assert.throws(()=>T.updateThread(t.id,{settings:{responders:['not-a-real-agent']}}),/Invalid selected agents/);
+  assert.throws(()=>T.updateThread(t.id,{settings:{responders:[]}}),/Invalid selected agents/);
+});
+
+test('project discovery and quick plans include hub-only folders', async () => {
+  const t=chat();const saved=plan(t,[{title:'Quick plan fixture'}]);
+  const {listProjects,projectDetail}=await import('../src/projects.js');
+  assert.ok(listProjects().some(p=>p.path===t.cwd && p.exists));
+  const p=await projectDetail(t.cwd);assert.equal(p.plans[0].id,saved.id);assert.equal(p.plans[0].steps[0].title,'Quick plan fixture');
+});
+
+test('adding details keeps the same agent running, is idempotent and has independent read cursors',async()=>{
+  const t=chat({autoRelay:false});await T.sendMessage(t.id,'slow-chat fixture');
+  for(let i=0;i<100 && !T.getThread(t.id).messages.some(m=>m.role==='agent');i++)await new Promise(resolve=>setTimeout(resolve,5));
+  const before=T.getThread(t.id).messages.find(m=>m.role==='agent');assert.ok(before);
+  const options={mode:'details',requestId:'context-fixture-0001'};
+  const added=await T.sendMessage(t.id,'Keep the original task; add an accessible label.',options);assert.equal(added.details,true);
+  assert.equal(T.getThread(t.id).running,true);assert.equal(T.getThread(t.id).messages.filter(m=>m.role==='agent').length,1);assert.equal(T.getThread(t.id).queue.length,0);
+  const duplicate=await T.sendMessage(t.id,'Keep the original task; add an accessible label.',options);assert.equal(duplicate.duplicate,true);
+  const {readTaskUpdates}=await import('../src/context-updates.js');
+  assert.equal(readTaskUpdates(t.id,'ea').updates.length,1);assert.equal(readTaskUpdates(t.id,'ea').updates.length,0);assert.equal(readTaskUpdates(t.id,'eb').updates.length,1);
+  const finished=await idle(t.id);assert.equal(finished.messages.find(m=>m.id===before.id).status,'done');assert.equal(finished.messages.filter(m=>m.round==='context-update').length,1);
+});
+
+
+test('new turns receive owner prompts and selected credentials without putting secret values in the prompt',async()=>{
+  const prior=process.env.TOKEN_ENCRYPTION_KEY;process.env.TOKEN_ENCRYPTION_KEY='cd'.repeat(32);
+  const G=await import('../src/config/globals.js');
+  const p=G.savePrompt({title:'Fixture global style',content:'Global fixture: use short paragraphs.',targets:['ea']});
+  G.saveVariable({name:'FIXTURE_ACCESS',value:'synthetic-fixture-value',secret:true,targets:['ea']});
+  try{
+    const t=chat();await T.sendMessage(t.id,'capture-global-fixture');await idle(t.id);
+    const result=JSON.parse(fs.readFileSync(path.join(t.cwd,'captured-global.json'),'utf8'));
+    assert.match(result.prompt,/Global fixture: use short paragraphs/);assert.match(result.prompt,/FIXTURE_ACCESS/);assert.doesNotMatch(result.prompt,/synthetic-fixture-value/);assert.equal(result.credential,true);assert.equal(result.master,false);
+  }finally{G.deletePrompt(p.id);G.deleteVariable('FIXTURE_ACCESS');if(prior===undefined)delete process.env.TOKEN_ENCRYPTION_KEY;else process.env.TOKEN_ENCRYPTION_KEY=prior;}
 });

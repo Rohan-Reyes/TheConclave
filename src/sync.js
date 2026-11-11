@@ -10,38 +10,25 @@ const fail = (message, status = 400) => Object.assign(new Error(message), { stat
 
 export function translatePath(p, fromPlatform, toPlatform) {
   if (!p || typeof p !== 'string') return p;
-  const winUser = process.env.CONCLAVE_LAPTOP_USER || 'User';
-  const piUser = process.env.CONCLAVE_PI_USER || 'rasp-pi';
-  const piBase = ['', 'home', piUser].join('/');
-  const winBase = ['C:', 'Users', winUser].join('\\');
-
   if (fromPlatform === 'win32' && toPlatform !== 'win32') {
     let res = p;
-    const reWinConclave = new RegExp('[cC]:[\\\\/][uU]sers[\\\\/]' + winUser + '[\\\\/][cC]onclave', 'gi');
-    const reWinApp = new RegExp('[cC]:[\\\\/][uU]sers[\\\\/]' + winUser + '[\\\\/]agent-hub', 'gi');
-    const reWinUser = new RegExp('[cC]:[\\\\/][uU]sers[\\\\/]' + winUser, 'gi');
-    const rePiSlashes = new RegExp(piBase.replace(/[/]/g, '\\/') + '[^\\s"\'<>`]*', 'g');
-
-    res = res.replace(reWinConclave, piBase + '/Conclave');
-    res = res.replace(reWinApp, piBase + '/.local/share/conclave/app');
-    res = res.replace(reWinUser, piBase);
-    res = res.replace(rePiSlashes, match => match.replace(/\\+/g, '/'));
+    res = res.replace(/[cC]:[\\\/][uU]sers[\\\/][uU]ser[\\\/][cC]onclave/gi, '/home/rasp-pi/Conclave');
+    res = res.replace(/[cC]:[\\\/][uU]sers[\\\/][uU]ser[\\\/]agent-hub/gi, '/home/rasp-pi/.local/share/conclave/app');
+    res = res.replace(/[cC]:[\\\/][uU]sers[\\\/][uU]ser/gi, '/home/rasp-pi');
+    // Convert backslashes within translated linux path components
+    res = res.replace(/\/home\/rasp-pi[^\s"'<>`]*/g, match => match.replace(/\\+/g, '/'));
     if (/^[a-zA-Z]:[\\\/]/.test(p) || p.startsWith('\\\\')) {
       res = res.replace(/\\+/g, '/');
     }
     return res;
   } else if (fromPlatform !== 'win32' && toPlatform === 'win32') {
     let res = p;
-    const rePiConclave = new RegExp(piBase.replace(/[/]/g, '\\/') + '\\/Conclave', 'g');
-    const rePiApp = new RegExp(piBase.replace(/[/]/g, '\\/') + '\\/(\\.local\\/share\\/conclave\\/app|agent-hub)', 'g');
-    const rePiUser = new RegExp(piBase.replace(/[/]/g, '\\/'), 'g');
-    const reWinSlashes = new RegExp('[cC]:\\\\Users\\\\' + winUser + '[^\\s"\'<>`]*', 'gi');
-
-    res = res.replace(rePiConclave, winBase + '\\Conclave');
-    res = res.replace(rePiApp, winBase + '\\agent-hub');
-    res = res.replace(rePiUser, winBase);
-    res = res.replace(reWinSlashes, match => match.replace(/\/+/g, '\\'));
-    if (p.startsWith(piBase)) {
+    res = res.replace(/\/home\/rasp-pi\/Conclave/g, 'C:\\Users\\User\\Conclave');
+    res = res.replace(/\/home\/rasp-pi\/(\.local\/share\/conclave\/app|agent-hub)/g, 'C:\\Users\\User\\agent-hub');
+    res = res.replace(/\/home\/rasp-pi/g, 'C:\\Users\\User');
+    // Convert forward slashes within translated windows path components
+    res = res.replace(/[cC]:\\Users\\User[^\s"'<>`]*/gi, match => match.replace(/\/+/g, '\\'));
+    if (p.startsWith('/home/rasp-pi')) {
       res = res.replace(/\//g, '\\');
     }
     return res;

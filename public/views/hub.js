@@ -1,8 +1,11 @@
+import { agentAvatar } from './agent-avatar.js';
 import { api, esc, ago, md, toast, modal, copy, $, $$ } from '../lib.js';
 import { memoryForm } from './memory.js';
 import { fileChips, bindFileChips, openWith } from './files.js';
 import { planHtml, questionHtml, bindPlanAndQuestions, teamStripHtml, teamDialog } from './plan.js';
 import { openShortcuts } from '../app.js';
+import { selectionHtml, bindSelection, selectionLabel } from './selection.js';
+import { openPlanQuickView } from './plan.js';
 import { openRunnerModal } from './runner.js';
 
 const TOOLS = { claude: 'Claude', antigravity: 'Antigravity', codex: 'Codex' };
@@ -17,7 +20,7 @@ async function loadMembers() {
 }
 const ACCESS = { read: 'Read-only', ask: 'Ask me', edit: 'Can edit', full: 'Full access' };
 const APMODE = { auto: 'Plans run automatically', risk: 'Auto, ask on risky steps', manual: 'I click Run plan' };
-const ROUND_LABEL = { synthesis: 'verdict', relay: 'handed off', imported: 'earlier session', build: 'builder', review: 'reviewer', fix: 'fix', 'plan-fix': 'plan fix' };
+const ROUND_LABEL = { 'context-update': 'added details', synthesis: 'verdict', relay: 'handed off', imported: 'earlier session', build: 'builder', review: 'reviewer', fix: 'fix', 'plan-fix': 'plan fix' };
 const roundLabel = r => !r ? '' : ROUND_LABEL[r] || (r.startsWith('council-') ? `round ${r.split('-')[1]}` : r.startsWith('step-') ? `step ${r.slice(5)}` : r.startsWith('review-') ? `review ${r.slice(7)}` : r.startsWith('fix-') ? `fix ${r.slice(4)}` : r);
 const PHASE = { thinking: 'thinking', writing: 'writing', tool: 'working' };
 const dur = m => {
@@ -126,7 +129,7 @@ export async function renderHub(view, params, threadId) {
       return `
       <div class="hub-thread-row" style="position:relative">
         <a class="hub-thread ${t.id === threadId ? 'on' : ''} ${t.settings?.pinned ? 'pinned' : ''}" href="#/hub/${t.id}">
-          <span class="tgt ${t.target}">${esc(TARGETS[t.target] || t.target)}</span>
+          <span class="tgt ${t.target}">${esc(selectionLabel(t,TOOLS))}</span>
           <span class="t">${t.settings?.pinned ? '<span class="pin-badge" title="Pinned">📌</span>' : ''}${esc(t.title)}</span>
           <span class="muted tiny">${seamless ? '<span class="sync-indicator seamless" title="Seamless: synced with Raspberry Pi">☁️</span> ' : '<span class="sync-indicator local" title="Local only">💻</span> '}${t.running ? '<span class="live-dot"></span> working' : (t.otherDeviceWorking ? '<span class="live-dot warn"></span> other device working' : ago(t.updated))} · ${t.n} msgs</span>
         </a>
@@ -184,14 +187,15 @@ function renderWelcome(box, params) {
   box.innerHTML = `<div class="hub-welcome">
     <button type="button" class="mobile-chats-btn" id="welcome-show-chats" style="margin-bottom:12px">← View chat history</button>
     <h1>Your AI coding council</h1>
-    <p class="muted">Talk to Claude Code, Antigravity or Codex in one chat. Switch between them any time without losing context, or ask all three at once and let them debate or build and review together.</p>
+    <p class="muted">Talk to Claude Code, Antigravity or Codex in one chat. Switch between them any time without losing context, or combine selected agents and let them debate or build and review together.</p>
     <div class="grid" style="margin:18px 0">
       <div class="panel pad"><b>Switch freely</b><div class="small muted">Pick a tool under the message box, or type <code>@codex</code>. The next agent sees everything said so far.</div></div>
       <div class="panel pad"><b>A real team</b><div class="small muted">Give agents roles (lead, builder, reviewer…). They see each other's usage limits and split the work.</div></div>
       <div class="panel pad"><b>Council: debate → plan → build</b><div class="small muted">All answer, review each other, the lead writes a plan, and the team builds it step by step.</div></div>
     </div>
     <div class="composer panel quick">
-      <div class="seg" id="q-target">${Object.entries(TARGETS).map(([k, v], i) => `<button data-v="${k}" class="${k} ${i === 0 ? 'on' : ''}">${v}</button>`).join('')}</div>
+      <div class="seg" id="q-target">${selectionHtml({target:'claude'}, TOOLS)}</div>
+      <div class="tiny muted">Select one or more agents. Toggle Council to have that selection debate and plan together.</div>
       <textarea id="q-input" rows="3" placeholder="Ask anything to start, or type / for templates. Files go in your Conclave folder."></textarea>
       <div class="row" style="justify-content:space-between;align-items:center;margin-top:4px">
         <div class="row" style="gap:6px">
@@ -201,7 +205,6 @@ function renderWelcome(box, params) {
       </div>
     </div></div>`;
 
-  let qt = 'claude';
   const qInput = $('#q-input');
   try {
     const saved = store.get(draftKey);
@@ -213,19 +216,15 @@ function renderWelcome(box, params) {
     else store.del(draftKey);
   });
 
-  $$('#q-target button').forEach(b => b.onclick = () => {
-    qt = b.dataset.v;
-    $$('#q-target button').forEach(x => x.classList.toggle('on', x === b));
-    qInput.focus();
-  });
-  $('#nc2').onclick = () => newChatDialog(params.get('cwd'));
+  const quickSelection = bindSelection($('#q-target'), {target:'claude'}, TOOLS, () => { qInput.focus(); });
+  $('#nc2').onclick = () => newChatDialog(params.get('cwd'),quickSelection());
   $('#welcome-show-chats')?.addEventListener('click', () => document.body.classList.add('mobile-list-open'));
 
   const go = () => {
     const v = qInput.value.trim();
     if (v) {
       store.del(draftKey);
-      quickChat(qt, v);
+      quickChat(quickSelection(), v);
     }
   };
   $('#q-send').onclick = go;
@@ -239,27 +238,26 @@ function renderWelcome(box, params) {
   if (params.get('cwd')) newChatDialog(params.get('cwd'));
 }
 
-async function quickChat(target = 'claude', firstMessage = '') {
+async function quickChat(selection = {target:'claude'}, firstMessage = '') {
   try {
-    const t = await api('/api/threads', { method: 'POST', body: { target } });
+    const t = await api('/api/threads', { method: 'POST', body: selection });
     if (firstMessage) await api(`/api/threads/${t.id}/messages`, { method: 'POST', body: { text: firstMessage } });
     location.hash = '#/hub/' + t.id;
   } catch (e) { toast(e.message, true); }
 }
 
-function newChatDialog(presetCwd) {
+function newChatDialog(presetCwd, initialSelection = {target:'claude'}) {
   modal(`
     <h2 style="margin:0">New Conclave chat</h2>
     <label class="field">Working folder (optional)<input id="nc-cwd" list="nc-projects" placeholder="Leave empty for a fresh folder under ~/Conclave" value="${esc(presetCwd || '')}"><datalist id="nc-projects"></datalist></label>
-    <div class="field">Talk to<div class="seg" id="nc-target">${Object.entries(TARGETS).map(([k, v], i) => `<button data-v="${k}" class="${i === 0 ? 'on' : ''} ${k}">${v}</button>`).join('')}</div></div>
+    <div class="field">Talk to<div class="seg" id="nc-target">${selectionHtml(initialSelection, TOOLS)}</div></div>
     <div class="modal-actions"><button id="nc-cancel">Cancel</button><button class="primary" id="nc-go">Create</button></div>`, async (root, close) => {
     const projects = await api('/api/projects').catch(() => []);
     $('#nc-projects', root).innerHTML = projects.filter(p => p.exists).map(p => `<option value="${esc(p.path)}">`).join('');
-    let target = 'claude';
-    $$('#nc-target button', root).forEach(b => b.onclick = () => { target = b.dataset.v; $$('#nc-target button', root).forEach(x => x.classList.toggle('on', x === b)); });
+    const selection = bindSelection($('#nc-target',root),initialSelection,TOOLS);
     $('#nc-cancel', root).onclick = close;
     $('#nc-go', root).onclick = async () => {
-      const t = await api('/api/threads', { method: 'POST', body: { cwd: $('#nc-cwd', root).value.trim(), target } });
+      const t = await api('/api/threads', { method: 'POST', body: { cwd: $('#nc-cwd', root).value.trim(), ...selection() } });
       close(); location.hash = '#/hub/' + t.id;
     };
   });
@@ -269,6 +267,7 @@ async function renderThread(box, id, list, onListChanged) {
   cleanupThread?.(); cleanupThread = null;
   let disposed = false;
   let t = await api('/api/threads/' + id);
+  let selectionControl;
   if (disposed) return;
   let limits = {}, credits = {};
   let pendingAttachments = [];
@@ -294,6 +293,7 @@ async function renderThread(box, id, list, onListChanged) {
           <svg class="ic"><use href="#i-folder"/></svg><input id="cwd" class="mono small cwd-input" list="cwd-list" value="${esc(t.cwd)}" aria-label="Working folder" title="Change the folder agents work in"><datalist id="cwd-list"></datalist>
           ${t.settings.quick ? '<span class="chip" title="Quick chat: its own folder under ~/Conclave">quick</span>' : ''}
           <button class="small icon-btn" id="open-cwd" title="Show folder in Explorer">↗</button>
+          <button class="small" id="open-plan" title="Quick view of project plans">▤ Plan</button>
           <button class="small" id="open-runner" title="Project tasks and script runner">▶ Runner</button>
           <button class="small" id="open-term" title="Open built-in terminal in this folder">>_ Terminal</button>
           <button class="small chip-sync ${isSeamless ? 'chip-seamless' : 'chip-local'}" id="btn-sync-toggle" title="Click to toggle sync between Seamless (Raspberry Pi synced) and Local Only">${isSeamless ? '☁️ Seamless' : '💻 Local Only'}</button>
@@ -328,12 +328,13 @@ async function renderThread(box, id, list, onListChanged) {
     <div class="msgs" id="msgs"></div>
     <div class="wait-banner" id="waiting" hidden></div>
     <div class="queue" id="queue" hidden></div>
+    <div id="details-delivery" class="tiny muted" role="status" hidden></div>
     <div class="composer panel" id="composer">
       <div class="drag-overlay"><span>📥 Drop files here to attach</span></div>
       <div class="slash-popover" id="slash-popover" hidden></div>
       <div class="row" style="align-items:center;justify-content:space-between;gap:8px">
         <div class="row" style="gap:8px;align-items:center">
-          <div class="seg" id="target" role="tablist">${Object.entries(TARGETS).map(([k, v]) => `<button data-v="${k}" class="${k} ${t.target === k ? 'on' : ''}">${v}</button>`).join('')}</div>
+          <div class="seg" id="target" title="Click agent names to add or remove them; Council uses your selection" role="group" aria-label="Agents and council mode">${selectionHtml(t, TOOLS)}</div>
           <select id="model" class="small pick" title="Model for this tool in this chat"></select>
           <select id="effort" class="small pick" title="Reasoning effort"></select>
         </div>
@@ -355,7 +356,7 @@ async function renderThread(box, id, list, onListChanged) {
         <span class="hint" id="hint" title="Codex native images, Claude reads paths, Antigravity file paths">Enter send · Shift+Enter newline · / templates</span>
         <div class="composer-actions-right">
           <button id="stop" class="danger" hidden>■ Stop</button>
-          <button id="now" hidden title="Stop the current run and send this right away (Ctrl+Enter)">⚡ Send now</button>
+          <button id="now" hidden title="Add details without stopping the active run (Alt+M or Ctrl+Enter)">＋ Add details</button>
           <button class="primary" id="send">Send</button>
         </div>
       </div>
@@ -703,7 +704,7 @@ async function renderThread(box, id, list, onListChanged) {
       : m.status === 'error' ? '<span style="color:var(--danger)">failed</span>' : m.status === 'stopped' ? 'stopped'
       : new Date(m.created).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     return `${actions(m)}
-      <div class="who">${m.role === 'agent' ? `<span class="av sm ${esc(m.tool)}">${esc((who || '?')[0])}</span>` : ''}<b>${esc(who)}</b>${m.round ? `<span class="chip">${esc(roundLabel(m.round))}</span>` : ''}
+      <div class="who">${m.role === 'agent' ? agentAvatar(m.tool, who, true) : ''}<b>${esc(who)}</b>${m.round ? `<span class="chip">${esc(roundLabel(m.round))}</span>` : ''}
         <span class="meta">${status}${m.role === 'agent' && dur(m) ? ' · ' + dur(m) : ''}</span></div>
       ${act}${run && !m.content ? `<div class="thinking-bar"><span class="dots"><i></i><i></i><i></i></span></div>` : ''}<div class="md">${body}</div>
       ${m.role === 'agent' ? fileChips(m.files, run ? '' : m.content) : ''}
@@ -764,7 +765,7 @@ async function renderThread(box, id, list, onListChanged) {
     const atBottom = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 140;
     msgs.innerHTML = out.join('') || `<div class="empty">${t.target === 'council'
       ? (t.settings.councilMode === 'build' ? 'The builder builds, the reviewers check the real files, then the builder fixes.' : 'All members answer, review each other, then the lead writes the verdict and a plan the team carries out.')
-      : `${TARGETS[t.target]} will answer. Switch tools any time below; the next one sees the whole chat.`}</div>`;
+      : `${selectionLabel(t,TOOLS)} will answer. Switch tools any time below; the next one sees the whole chat.`}</div>`;
     for (const mid of openActs) {
       const det = msgs.querySelector(`.hm[data-id="${mid}"] details.tool.act`);
       if (det) det.open = true;
@@ -806,7 +807,7 @@ async function renderThread(box, id, list, onListChanged) {
     w.hidden = !runningMsgs.length;
     if (runningMsgs.length) w.innerHTML = runningMsgs.map(m => {
       const ph = m.phase || (m.content ? 'writing' : 'thinking');
-      return `<span class="work-chip ${esc(m.tool)} ph-${ph}"><span class="av sm ${esc(m.tool)}">${esc((TOOLS[m.tool] || m.tool)[0])}</span>${esc(TOOLS[m.tool] || m.tool)} is ${PHASE[ph] || 'working'}${ph === 'tool' && lastAct(m) ? ` <span class="mono tiny">${esc(lastAct(m).slice(0, 50))}</span>` : ''}</span>`;
+      return `<span class="work-chip ${esc(m.tool)} ph-${ph}">${agentAvatar(m.tool,TOOLS[m.tool] || m.tool,true)}${esc(TOOLS[m.tool] || m.tool)} is ${PHASE[ph] || 'working'}${ph === 'tool' && lastAct(m) ? ` <span class="mono tiny">${esc(lastAct(m).slice(0, 50))}</span>` : ''}</span>`;
     }).join('');
     const teamEl = $('#team');
     if (teamEl) teamEl.innerHTML = teamStripHtml(t.team || [], TOOLS, limits, credits, new Set(runningMsgs.map(m => m.tool)));
@@ -814,11 +815,15 @@ async function renderThread(box, id, list, onListChanged) {
 
   function drawChrome() {
     if (disposed || !$('#stop')) return;
+    selectionControl?.sync(t);
     const busy = t.running;
     const remote = isSeamless && t.otherDeviceWorking;
     const remoteNote = $('#remote-working');
     remoteNote.hidden = !remote;
     remoteNote.textContent = remote ? `☁️ Other device already working${t.remoteExecutionStatus?.device ? ` (${t.remoteExecutionStatus.device})` : ''}. Your draft stays here until you send it.` : '';
+    const delivery=$('#details-delivery'), updates=t.contextUpdates;
+    delivery.hidden=!updates?.latest;
+    if(updates?.latest){const checked=updates.readers.filter(reader=>reader.cursor>=updates.latest).map(reader=>TOOLS[reader.tool] || reader.tool);delivery.textContent=checked.length ? `Details checked by ${checked.join(', ')}.` : 'Details saved. Available at the next context check or model turn; the active run continues.';}
     $('#stop').hidden = !busy;
     $('#now').hidden = !busy;
     $('#send').textContent = busy ? 'Queue' : 'Send';
@@ -831,7 +836,7 @@ async function renderThread(box, id, list, onListChanged) {
     $('#queue').hidden = !q.length;
     $('#queue').innerHTML = q.map((x, i) => `<div class="queued" data-qid="${x.id}"><span class="chip">${i + 1}</span><span class="qt">${esc(x.text)}</span>
       <button class="small" data-q="edit" title="Pull back into composer to edit">✎ Edit</button>
-      <button class="small" data-q="send" title="Stop the current run and send this now">⚡ Send now</button><button class="small icon-btn" data-q="drop" title="Remove">✕</button></div>`).join('')
+      <button class="small" data-q="send" title="Add this context without stopping the active run">＋ Add details</button><button class="small icon-btn" data-q="drop" title="Remove">✕</button></div>`).join('')
       + (q.length ? `<div class="tiny muted" style="padding:0 4px">Queued messages send automatically when the agents finish${busy ? '' : ' (paused after Stop: send them yourself)'}.</div>` : '');
     $$('#target button').forEach(b => {
       const out = t.credits?.[b.dataset.v];
@@ -844,8 +849,8 @@ async function renderThread(box, id, list, onListChanged) {
     drawPickers();
     drawWorking();
     $('#input').placeholder = remote ? 'Other device already working… Your draft stays on this device'
-      : busy ? 'Agents are working… Enter queues message, Ctrl+Enter sends now'
-      : t.target === 'council' ? 'Ask the council… (type / for templates)' : `Message ${TARGETS[t.target]}… (type / for templates)`;
+      : busy ? 'Agents are working… Enter queues; Alt+M adds details without stopping'
+      : t.target === 'council' ? 'Ask the council… (type / for templates)' : `Message ${selectionLabel(t,TOOLS)}… (type / for templates)`;
   }
 
   draw();
@@ -932,7 +937,7 @@ async function renderThread(box, id, list, onListChanged) {
         toast('Queued message moved back to composer');
       } else {
         b.disabled = true; b.textContent = 'Sending…';
-        await api(`/api/threads/${id}/queue/${qid}/send`, { method: 'POST', body: {} });
+        await api(`/api/threads/${id}/queue/${qid}/details`, { method: 'POST', body: {} });
         refresh();
       }
     } catch (err) { toast(err.message, true); }
@@ -1097,11 +1102,12 @@ async function renderThread(box, id, list, onListChanged) {
       slashBox.hidden = true;
       store.del(draftKey);
 
-      if (r.queued) toast(`Queued (#${r.position}). It sends when the agents finish.`);
+      if (r.details) {toast(r.delivery || 'Details already saved');refresh();}
+      else if (r.queued) toast(`Queued (#${r.position}). It sends when the agents finish.`);
       else if (r.duplicate) { toast('This message was already accepted.'); refresh(); }
       else { t.running = true; drawChrome(); onListChanged?.(); }
       askNotifyPermission();
-      if (r.queued || body.mode === 'now') refresh();
+      if (r.queued) refresh();
     } catch (e) { toast(e.message, true); }
     finally { sending = false; }
   }
@@ -1114,7 +1120,7 @@ async function renderThread(box, id, list, onListChanged) {
       : isMobile
         ? Math.min(100, Math.floor(window.innerHeight * 0.18))
         : 260;
-    input.style.height = Math.min(input.scrollHeight, maxH) + 'px';
+    input.style.height = Math.max(48, Math.min(input.scrollHeight, maxH)) + 'px';
   };
 
   input.addEventListener('input', () => {
@@ -1132,7 +1138,7 @@ async function renderThread(box, id, list, onListChanged) {
     if (input.value.trim() || pendingAttachments.length) send({ text: input.value });
   };
   $('#now').onclick = () => {
-    if (input.value.trim() || pendingAttachments.length) send({ text: input.value, mode: 'now' });
+    if (input.value.trim() || pendingAttachments.length) send({ text: input.value, mode: 'details' });
     else api(`/api/threads/${id}/stop`, { method: 'POST', body: {} });
   };
 
@@ -1174,11 +1180,9 @@ async function renderThread(box, id, list, onListChanged) {
 
   $('#stop').onclick = () => api(`/api/threads/${id}/stop`, { method: 'POST', body: {} }).then(() => toast('Stopping…'));
 
-  $$('#target button').forEach(b => b.onclick = async () => {
-    t = { ...t, ...(await api('/api/threads/' + id, { method: 'PATCH', body: { target: b.dataset.v } })) };
-    $$('#target button').forEach(x => x.classList.toggle('on', x === b));
-    drawChrome(); input.focus();
-    $$('.hub-thread.on .tgt').forEach(el => { el.className = `tgt ${t.target}`; el.textContent = TARGETS[t.target]; });
+  selectionControl = bindSelection($('#target'),t,TOOLS,async selection => {
+    t = { ...t, ...(await api('/api/threads/' + id, {method:'PATCH',body:selection})) };
+    drawChrome(); input.focus(); onListChanged?.();
   });
 
   const saveSettings = async patchData => {
@@ -1193,6 +1197,7 @@ async function renderThread(box, id, list, onListChanged) {
   });
   $('#cwd').onchange = e => api('/api/threads/' + id, { method: 'PATCH', body: { cwd: e.target.value } }).then(() => toast('Folder updated'));
   $('#open-cwd').onclick = () => openWith(t.cwd, 'folder');
+  $('#open-plan').onclick = () => openPlanQuickView(t.plans || [], TOOLS);
   $('#open-runner').onclick = () => openRunnerModal(t.cwd, text => { input.value = (input.value ? input.value + '\n\n' : '') + text; grow(); input.focus(); saveDraft(); });
   $('#open-term').onclick = () => { location.hash = '#/terminal?cwd=' + encodeURIComponent(t.cwd || ''); };
   $('#btn-sync-toggle').onclick = async () => {
@@ -1277,6 +1282,12 @@ function toggleFocus() {
 if (typeof document !== 'undefined') {
   document.addEventListener('keydown', e => {
     if (!location.hash.startsWith('#/hub')) return;
+    if(e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase()==='m' && !e.repeat && !document.querySelector('dialog[open]')){
+      const input=$('#input');if(!input)return;e.preventDefault();
+      if(input.value.trim())$('#now')?.click();else {input.focus();toast('Type details, then press Alt+M to add them without stopping the run.');}
+      return;
+    }
+
   if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); toggleFocus(); }
   if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'b') { e.preventDefault(); window.__cvToggleList?.(); }
   if (e.key === 'Escape') {
