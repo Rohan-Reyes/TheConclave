@@ -66,14 +66,14 @@ function chatOr404(id) {
 app.get('/api/stats', wrap(() => {
   const db = getDb();
   return {
-    version: '2.0.0-preview',
+    version: '2.0.0',
     chats: db.prepare('SELECT tool, COUNT(*) AS n, MAX(updated) AS last FROM chats GROUP BY tool').all(),
     memories: db.prepare('SELECT COUNT(*) AS n FROM memories').get().n,
     projects: db.prepare("SELECT COUNT(DISTINCT project) AS n FROM chats WHERE project != ''").get().n,
     index: indexState,
   };
 }));
-app.get('/api/version', wrap(() => ({ version: '2.0.0-preview', name: 'conclave' })));
+app.get('/api/version', wrap(() => ({ version: '2.0.0', name: 'conclave' })));
 app.post('/api/reindex', wrap(() => runIndex()));
 
 // ---- chats

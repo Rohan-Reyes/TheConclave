@@ -1,6 +1,6 @@
 {
   "name": "conclave",
-  "version": "2.0.0-preview",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "description": "Personal assistant and coding workspace",
@@ -14,7 +14,8 @@
     "test:assistant": "node --test --test-concurrency=1 assistant/test/*.test.js",
     "setup": "node scripts/setup-unified.mjs",
     "test:chat-ui": "node scripts/check-chat-fixes.mjs",
-    "format:check": "prettier --check src/config/globals.js src/context-updates.js public/views/globals.js test/globals.test.js test/skills-install.test.js"
+    "format:check": "prettier --check src/config/globals.js src/context-updates.js public/views/globals.js test/globals.test.js test/skills-install.test.js",
+    "telegram:setup": "node --env-file-if-exists=.env scripts/telegram-setup.mjs"
   },
   "engines": {
     "node": ">=24"

@@ -1,0 +1,4 @@
+# Separate venv from the existing Telethon / py-tgcalls 3.x bridge.
+Pyrogram==2.0.106
+py-tgcalls==2.2.11
+edge-tts>=7.2,<8

@@ -17,7 +17,7 @@ async function dashboard() {
   if (saved.spin === undefined && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) opts.spin = false;
   const persist = () => { try { localStorage.setItem('jarvis-graph', JSON.stringify(opts)); } catch {} };
   const wrap = el('div', undefined, 'dash'), stage = el('section', undefined, 'dash-stage'), side = el('div', undefined, 'dash-side');
-  const canvas = document.createElement('canvas'); canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-label', '3D memory map: Jarvis at the centre, memories grouped by category and topic');
+  const canvas = document.createElement('canvas'); canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-label', '3D memory map: Conclave at the centre, memories grouped by category and topic');
   const hud = el('div', undefined, 'dash-hud'), zoomBar = el('div', undefined, 'dash-zoom');
   stage.append(canvas, hud, zoomBar); wrap.append(stage, side); root.append(wrap);
 
@@ -29,7 +29,7 @@ async function dashboard() {
   });
   const byId = new Map(nodes.map(n => [n.id, n]));
   const links = graph.links.map(l => ({ ...l, s: byId.get(l.source), t: byId.get(l.target) })).filter(l => l.s && l.t);
-  const center = byId.get('jarvis'); if (!center) throw new Error('The memory graph is missing its Jarvis hub'); center.fixed = true;
+  const center = byId.get('jarvis'); if (!center) throw new Error('The memory graph is missing its Conclave hub'); center.fixed = true;
   const visible = n => n.type === 'jarvis' || !opts.hidden.includes(n.category);
   const linkVisible = l => visible(l.s) && visible(l.t) && (opts.related || l.kind !== 'related');
   const radius = n => n.type === 'jarvis' ? 24 : n.type === 'topic' ? 8 + Math.min(5, Math.sqrt(n.count || 1)) : n.type === 'category' ? 12 + Math.min(8, Math.sqrt(n.count || 1) * 2) : 5 + Math.min(6, Math.sqrt(n.access_count || 0) * 1.4);
@@ -107,6 +107,7 @@ async function dashboard() {
     if (provenance.length) detail.append(el('p', provenance.join(' · '), 'muted'));
     if (metadata.qualification) detail.append(el('p', `Context: ${String(metadata.qualification).replaceAll('_', ' ')}`, 'muted'));
     if (metadata.kind && metadata.kind !== 'fact') detail.append(el('p', 'This imported statement retains its source context; it is not a verified present-day fact.', 'muted'));
+    if(n.source==='conclave-shared'){const link=el('a','Edit in shared Conclave Memory →');link.href='/#/memory';detail.append(link);return;}
     const row = el('div', undefined, 'inline-select'), s = document.createElement('select'); s.setAttribute('aria-label', 'Category');
     const auto = el('option', `Automatic (${graph.categories[n.category]})`); auto.value = ''; s.append(auto);
     for (const [v, t] of Object.entries(graph.categories)) { const o = el('option', t); o.value = v; s.append(o); }

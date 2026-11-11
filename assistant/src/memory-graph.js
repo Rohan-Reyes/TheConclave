@@ -114,7 +114,7 @@ export function memoryGraph(db) {
   const topics = new Map();
   for (const n of nodes) if (n.topic) { const key = `topic:${n.topic.toLowerCase()}`; if (!topics.has(key)) topics.set(key, { id: key, type: 'topic', label: n.topic.length > 40 ? `${n.topic.slice(0, 38)}…` : n.topic, categories: new Map(), count: 0 }); const t = topics.get(key); t.count++; t.categories.set(n.category, (t.categories.get(n.category) || 0) + 1); links.push({ source: key, target: n.id, kind: 'topic' }); }
   for (const t of topics.values()) { t.category = [...t.categories].sort((a, b) => b[1] - a[1])[0][0]; delete t.categories; links.push({ source: 'jarvis', target: t.id, kind: 'topic-hub' }); }
-  const hubs = [{ id: 'jarvis', type: 'jarvis', label: 'JARVIS' }, ...[...used].map(c => ({ id: `category:${c}`, type: 'category', category: c, label: CATEGORIES[c].label, count: nodes.filter(n => n.category === c).length }))];
+  const hubs = [{ id: 'jarvis', type: 'jarvis', label: 'Conclave' }, ...[...used].map(c => ({ id: `category:${c}`, type: 'category', category: c, label: CATEGORIES[c].label, count: nodes.filter(n => n.category === c).length }))];
   return { nodes: [...hubs, ...topics.values(), ...nodes], links, categories: Object.fromEntries(categoryIds.map(c => [c, CATEGORIES[c].label])) };
 }
 

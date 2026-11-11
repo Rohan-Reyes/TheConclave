@@ -1,3 +1,4 @@
+import { telegramSchema, telegramStatus, configureTelegram, queueTelegram } from './telegram.js';
 import { createServer } from 'node:http';
 import { createServer as createSecureServer } from 'node:https';
 import { readFileSync, unlinkSync, realpathSync } from 'node:fs';
@@ -30,12 +31,13 @@ async function body(req) {
   catch { fail(400, 'Invalid JSON object'); }
 }
 
-export function createApp({ db = openDb(), origin = process.env.APP_ORIGIN || 'http://127.0.0.1:3210', secret = process.env.SESSION_SECRET, encryptionKey = process.env.TOKEN_ENCRYPTION_KEY, sharedIdentity, globalInstructions = () => '' } = {}) {
+export function createApp({ db = openDb(), origin = process.env.APP_ORIGIN || 'http://127.0.0.1:3210', secret = process.env.SESSION_SECRET, encryptionKey = process.env.TOKEN_ENCRYPTION_KEY, sharedIdentity, globalInstructions = () => '', syncSharedMemory = () => {} } = {}) {
   if (!secret || !/^[a-f0-9]{64}$/i.test(secret)) throw new Error('SESSION_SECRET must be a generated 32-byte hex value. Run npm run setup.');
   if (!encryptionKey || !/^[a-f0-9]{64}$/i.test(encryptionKey)) throw new Error('TOKEN_ENCRYPTION_KEY must be an independent generated 32-byte hex value.');
   if (secret === encryptionKey) throw new Error('Session and encryption keys must be independent');
   const originUrl = new URL(origin);
   companionSchema(db);
+  telegramSchema(db);
   if (originUrl.origin !== origin || (originUrl.protocol !== 'https:' && !['127.0.0.1', 'localhost', '[::1]'].includes(originUrl.hostname))) throw new Error('APP_ORIGIN must be an exact HTTPS origin or local loopback origin');
   const secure = originUrl.protocol === 'https:';
   const cookieName = secure ? '__Host-jarvis' : 'jarvis_local';
@@ -111,6 +113,11 @@ export function createApp({ db = openDb(), origin = process.env.APP_ORIGIN || 'h
       if (!session) fail(401, 'Please log in');
       db.prepare('UPDATE sessions SET last_seen=? WHERE id=?').run(Date.now(), sessionId);
       db.prepare('UPDATE devices SET last_seen=? WHERE session_id=?').run(Date.now(), sessionId);
+      if (path === '/api/telegram' && method==='GET') {json(telegramStatus(db,encryptionKey));return;}
+      if (path === '/api/telegram/config' && method==='POST') {json(configureTelegram(db,encryptionKey,b));return;}
+      if (path === '/api/telegram/outbox' && method==='POST') {json(queueTelegram(db,encryptionKey,b),202);return;}
+      if (path === '/api/telegram' && method==='DELETE') {db.prepare("DELETE FROM secrets WHERE key='config:telegram'").run();db.prepare("UPDATE telegram_outbox SET state='cancelled' WHERE state='queued'").run();audit(db,'telegram.disconnected');json({ok:true});return;}
+      if(path.startsWith('/api/memories') || path==='/api/messages')syncSharedMemory();
       if (path.startsWith('/api/passkeys')) { json(await handlePasskeys(db, path, b, origin, sessionId, method)); return; }
       if (path.startsWith('/api/push')) { json(await handlePush(db, path, b, sessionId, encryptionKey, method)); return; }
       if (path.startsWith('/api/companions')) { json(companionOwner(db,path,b,secret,method)); return; }
@@ -170,6 +177,7 @@ export function createApp({ db = openDb(), origin = process.env.APP_ORIGIN || 'h
         recordActivity(db, [{ id: target, score: 1 }], 'viewed'); json({ ok: true }); return;
       }
       if (path === '/api/memories' && method === 'POST') {
+        if(b.id && db.prepare('SELECT source FROM memories WHERE id=?').get(b.id)?.source==='conclave-shared')fail(409,'Edit shared coding memories in Conclave Memory');
         const content = str(b.content, 4000), memoryId = b.id ? str(b.id, 64) : id();
         if (b.category !== undefined && b.category !== null && b.category !== '' && !categoryIds.includes(b.category)) fail(400, 'Unknown memory category');
         const category = b.category === undefined ? undefined : (b.category || null);

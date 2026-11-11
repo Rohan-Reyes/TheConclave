@@ -46,7 +46,7 @@ function voiceControls(parent, input) {
 const $ = s => document.querySelector(s);
 document.querySelectorAll('nav a span').forEach(icon=>icon.setAttribute('aria-hidden','true'));
 const root = $('#content');
-const titles = { dashboard: 'Dashboard', chat: 'Chat', notes: 'Notes & coding tasks', today: 'Today', tasks: 'Tasks & Automations', inbox: 'Inbox', connections: 'Connections', devices: 'Devices', settings: 'Settings' };
+const titles = { dashboard: 'Dashboard', chat: 'Chat', notes: 'Notes & coding tasks', today: 'Today', tasks: 'Tasks & Automations', inbox: 'Inbox', connections: 'Connections', telegram: 'Telegram', devices: 'Devices', settings: 'Settings' };
 let me, conversation, dashboardCleanup, editingSchedule, preview, renderVersion = 0;
 const date = n => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZone: me?.timezone || 'Asia/Manila' }).format(new Date(n));
 function toast(text) { $('#toast').textContent = text; $('#toast').hidden = false; clearTimeout(toast.timer); toast.timer = setTimeout(() => $('#toast').hidden = true, 6500); }
@@ -188,6 +188,7 @@ async function inbox() {
 }
 async function connections() {
   root.append(el('div', 'Connect only what you need. Credentials are encrypted on the server and never returned to this page. Remote messages and websites cannot grant permissions.', 'notice'));
+  const telegramLink=el('a','Telegram userbot →');telegramLink.href='#telegram';root.append(telegramLink);
   const list = await api('/connections'), grid = el('div', undefined, 'grid'); root.append(grid);
   for (const p of list) {
     const title = { google: 'Google Workspace', microsoft: 'Microsoft Outlook', weather: 'Open-Meteo Weather', model: 'Model provider' }[p.provider];
@@ -291,7 +292,7 @@ async function render() {
   $('#page-title').textContent = titles[page]; document.title = `${titles[page]} · Conclave`;
   document.querySelectorAll('[data-page]').forEach(a => a.classList.toggle('active', a.dataset.page === page));
   dashboardCleanup?.(); dashboardCleanup = null; root.replaceChildren(); document.body.classList.toggle('wide', page === 'dashboard');
-  try { const cleanup = await ({dashboard,chat,notes,today,tasks,inbox,connections,devices,settings}[page])(); if (typeof cleanup === 'function') { if (version === renderVersion) dashboardCleanup = cleanup; else cleanup(); } } catch (e) { if (version === renderVersion) { root.append(el('p', e.message, 'error-text')); toast(e.message); } }
+  try { const cleanup = await ({dashboard,chat,notes,today,tasks,inbox,connections,telegram,devices,settings}[page])(); if (typeof cleanup === 'function') { if (version === renderVersion) dashboardCleanup = cleanup; else cleanup(); } } catch (e) { if (version === renderVersion) { root.append(el('p', e.message, 'error-text')); toast(e.message); } }
 }
 async function boot() {
   try { me = await api('/me'); $('#login').hidden = true; $('#shell').hidden = false; $('#owner-label').textContent = me.username; $('#zone').textContent = me.timezone; await render(); }
@@ -319,4 +320,21 @@ async function notes() {
       location.assign('/#/hub?new=1');
     }),button('Delete',async()=>{if(!confirm('Delete this note?'))return;await api(`/notes/${note.id}`,{},'DELETE');await render();},'danger')]);
   }
+}
+
+async function telegram() {
+  const status=await api('/telegram');
+  const c=card('Telegram userbot','Chat with Conclave from your allowed Telegram account. Session credentials are stored encrypted and never shown here.');
+  c.append(tag(status.configured?status.health.state:'Authorization required'));
+  c.append(el('p','Authorize privately on the server with npm run telegram:setup. A Telegram API ID/hash, userbot login code, optional two-step password, and your numeric owner ID are required.','muted'));
+  if(!status.configured)return;
+  c.append(el('p',`Allowed owner: ${status.owner_id}. In Saved Messages on the same account, prefix requests with /conclave. A separate userbot account can receive ordinary private messages from this owner.`));
+  const f=form(c,'Save Telegram settings',async b=>{await api('/telegram/config',{enabled:b.enabled==='on',calls_enabled:b.calls_enabled==='on',notifications:b.notifications==='on'});toast('Telegram settings saved');await render();});
+  for(const [name,label] of [['enabled','Enable owner-only Telegram chat'],['calls_enabled','Allow outbound spoken-message calls'],['notifications','Send new reminder and automation notifications']]){const l=el('label',undefined,'check-label'),input=document.createElement('input');input.type='checkbox';input.name=name;input.checked=!!status[name];l.append(input,document.createTextNode(label));f.append(l);}f.addButton();
+  c.append(el('p','Calls require a userbot account different from your own account. Calls speak the supplied message; two-way voice conversation is not enabled. Chat replies use your connected assistant model.','muted'));
+  const send=card('Contact me','Only your configured owner account can be contacted. /call followed by a message also requests a spoken call from Telegram.');
+  const compose=form(send,'Queue for delivery',async(b,f)=>{await api('/telegram/outbox',{...b,request_id:crypto.randomUUID()});f.reset();toast('Queued; delivery runs in the background');await render();});
+  select(compose,'Action','kind',[['message','Send message'],['call','Call and speak this message']]);const text=field(compose,'Message (calls: 800 characters maximum)','text','textarea');text.maxLength=3800;compose.addButton();
+  const history=card('Delivery history','Uncertain actions are not automatically retried. Check Telegram before requesting another delivery.');for(const job of status.outbox)item(history,`${job.kind} · ${job.state}`,`${date(job.created_at)}${job.error?' · '+job.error:''}`);
+  actions(c,[button('Disconnect Telegram',async()=>{await api('/telegram',{},'DELETE');await render();},'danger')]);
 }
