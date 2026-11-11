@@ -217,7 +217,7 @@ async function dashboard() {
     const z1 = -ay * sp, y = ay * cp; return [ax * cy + z1 * sy, y, -ax * sy + z1 * cy];
   }
   function draw() {
-    const now = Date.now(); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, width, height);
+    const now = Date.now(); const css = getComputedStyle(document.documentElement), themeBg = css.getPropertyValue('--bg').trim() || '#151514', themeText = css.getPropertyValue('--muted').trim() || '#9b978e', themeLine = css.getPropertyValue('--line').trim() || '#33322f'; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, width, height);
     const elapsed = Math.min(50, now - lastFrame); lastFrame = now;
     if (opts.spin && !drag && now - lastInput > 2500) cam.yaw += 0.0016 * elapsed / 16.67;
     for (const [memoryId, at] of lit) if (now - at > 20000) lit.delete(memoryId);
@@ -232,7 +232,7 @@ async function dashboard() {
       ctx.beginPath(); ctx.moveTo(l.s.sx, l.s.sy); ctx.lineTo(l.t.sx, l.t.sy);
       const depthAlpha = (fog(l.s) + fog(l.t)) / 2;
       if (g > 0.02) { ctx.strokeStyle = l.t.color; ctx.globalAlpha = (0.35 + g * 0.65) * depthAlpha; ctx.lineWidth = 1.5 + g * 2; ctx.setLineDash([6, 6]); ctx.lineDashOffset = -now / 40; }
-      else { ctx.strokeStyle = l.kind === 'related' ? '#5b6f7c' : l.kind === 'topic' ? `${l.s.color}` : '#30434f'; ctx.globalAlpha = (l.kind === 'related' ? 0.3 : l.kind === 'topic' ? 0.22 : 0.7) * depthAlpha; ctx.lineWidth = l.kind === 'hub' ? 1.6 : 1; ctx.setLineDash(l.kind === 'related' ? [2, 4] : []); }
+      else { ctx.strokeStyle = l.kind === 'related' ? '#5b6f7c' : l.kind === 'topic' ? `${l.s.color}` : themeLine; ctx.globalAlpha = (l.kind === 'related' ? 0.3 : l.kind === 'topic' ? 0.22 : 0.7) * depthAlpha; ctx.lineWidth = l.kind === 'hub' ? 1.6 : 1; ctx.setLineDash(l.kind === 'related' ? [2, 4] : []); }
       ctx.stroke();
     }
     ctx.setLineDash([]); ctx.globalAlpha = 1;
@@ -272,7 +272,7 @@ async function dashboard() {
       const cells = []; for (let x = Math.floor((n.sx - tw / 2 - 3) / 24); x <= Math.floor((n.sx + tw / 2 + 3) / 24); x++) for (let row = Math.floor(y / 18); row <= Math.floor((y + size + 3) / 18); row++) cells.push(`${x}:${row}`);
       if (priority(candidate) < 90 && (labelsDrawn > 90 || cells.some(c => occupied.has(c)))) continue;
       for (const cell of cells) occupied.add(cell); labelsDrawn++;
-      ctx.globalAlpha = opacity; ctx.lineWidth = 3; ctx.strokeStyle = '#0d151c'; ctx.strokeText(text, n.sx, y); ctx.fillStyle = n.type === 'memory' && !(g > .05) ? '#c3d2da' : n.color; ctx.fillText(text, n.sx, y);
+      ctx.globalAlpha = opacity; ctx.lineWidth = 3; ctx.strokeStyle = themeBg; ctx.strokeText(text, n.sx, y); ctx.fillStyle = n.type === 'memory' && !(g > .05) ? themeText : n.color; ctx.fillText(text, n.sx, y);
     }
     ctx.globalAlpha = 1;
     const active = memoryNodes.filter(n => (heat.get(n.id) || 0) > 0.05).length;
