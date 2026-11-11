@@ -12,12 +12,26 @@ export function telegramSchema(db) {
 export function telegramStatus(db,key) {
   telegramSchema(db);const config=getSecret(db,'config:telegram',key);
   const health=db.prepare("SELECT value FROM settings WHERE key='telegram:health'").get()?.value;
-  return {configured:!!config?.session,enabled:!!config?.enabled,calls_enabled:!!config?.calls_enabled,notifications:!!config?.notifications,owner_id:config?.owner_id || null,health:health?JSON.parse(health):{state:'not_connected'},outbox:db.prepare('SELECT id,kind,state,created_at,error,completed_at FROM telegram_outbox ORDER BY created_at DESC LIMIT 20').all()};
+  return {api_id:config?.api_id || null,configured:!!config?.session,enabled:!!config?.enabled,calls_enabled:!!config?.calls_enabled,notifications:!!config?.notifications,owner_id:config?.owner_id || null,health:health?JSON.parse(health):{state:'not_connected'},outbox:db.prepare('SELECT id,kind,state,created_at,error,completed_at FROM telegram_outbox ORDER BY created_at DESC LIMIT 20').all()};
 }
 export function configureTelegram(db,key,input) {
   const previous=getSecret(db,'config:telegram',key) || {};
   for(const flag of ['enabled','calls_enabled','notifications'])if(input[flag]!==undefined && typeof input[flag]!=='boolean')throw new Error('Telegram flags must be boolean');
   const config={...previous,...Object.fromEntries(['enabled','calls_enabled','notifications'].filter(k=>input[k]!==undefined).map(k=>[k,input[k]]))};
+  const replacing = ['api_id','api_hash','session','owner_id'].some(k=>input[k]!==undefined && input[k]!=='');
+  if (replacing) {
+    const apiId = input.api_id === '' || input.api_id === undefined ? previous.api_id : Number(input.api_id);
+    const ownerId = input.owner_id === '' || input.owner_id === undefined ? previous.owner_id : Number(input.owner_id);
+    const hash = input.api_hash || previous.api_hash;
+    const session = input.session || previous.session;
+    if (!Number.isSafeInteger(apiId) || apiId <= 0) throw new Error('Enter a valid Telegram API ID');
+    if (!Number.isSafeInteger(ownerId) || ownerId <= 0) throw new Error('Enter your positive numeric Telegram owner ID');
+    if (typeof hash !== 'string' || !/^[a-f0-9]{32}$/i.test(hash)) throw new Error('API hash must be 32 hexadecimal characters');
+    if (typeof session !== 'string' || !/^1[A-Za-z0-9_=-]{100,2048}$/.test(session)) throw new Error('Enter an authorized Telethon StringSession; API credentials alone cannot log in');
+    telegramSchema(db);
+    db.prepare("UPDATE telegram_outbox SET state='cancelled',error='Telegram credentials changed' WHERE state='queued'").run();
+    Object.assign(config,{api_id:apiId,api_hash:hash,session,owner_id:ownerId,enabled:false,calls_enabled:false,notifications:false});
+  }
   if(!config.session)throw new Error('Authorize the userbot privately with npm run telegram:setup first');
   setSecret(db,'config:telegram',config,key);audit(db,'telegram.settings_changed');return {ok:true};
 }

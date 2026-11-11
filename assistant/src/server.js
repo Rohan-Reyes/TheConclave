@@ -15,7 +15,7 @@ import { companionSchema, companionOwner, companionDevice } from './companion.js
 import { memoryGraph, relevantMemories, recordActivity, categoryIds } from './memory-graph.js';
 import { importMemoryDocument, previewMemoryImport } from './memory-import.js';
 
-const assets = new Map(['index.html', 'app.js', 'dashboard.js', 'style.css', 'manifest.webmanifest', 'sw.js', 'icon.svg'].map(name => [
+const assets = new Map(['index.html', 'app.js', 'dashboard.js', 'theme.js', 'shell.css', 'style.css', 'manifest.webmanifest', 'sw.js', 'icon.svg'].map(name => [
   `/${name}`, { body: readFileSync(new URL(`../public/${name}`, import.meta.url)), type: name.endsWith('.html') ? 'text/html' : name.endsWith('.js') ? 'text/javascript' : name.endsWith('.css') ? 'text/css' : name.endsWith('.svg') ? 'image/svg+xml' : 'application/manifest+json' }
 ]));
 assets.set('/webauthn.js', { body: readFileSync(new URL('../../node_modules/@simplewebauthn/browser/dist/bundle/index.umd.min.js', import.meta.url)), type: 'text/javascript' });
@@ -54,9 +54,9 @@ export function createApp({ db = openDb(), origin = process.env.APP_ORIGIN || 'h
   }
   return createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-Frame-Options', sharedIdentity ? 'SAMEORIGIN' : 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-ancestors ${sharedIdentity ? "'self'" : "'none'"}; base-uri 'none'; form-action 'self'`);
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()');
     res.setHeader('Cache-Control', 'no-store');
     if (secure) res.setHeader('Strict-Transport-Security', 'max-age=31536000');

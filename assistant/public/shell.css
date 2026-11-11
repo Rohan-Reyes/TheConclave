@@ -1,0 +1,15 @@
+/* Assistant content uses Conclave's persistent shell and shared theme.css. */
+:root{--soft:var(--accent-soft);--on-accent:var(--accent-text)}
+html.embedded body{display:block;font:14px/1.5 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}
+.embedded #shell{display:block;min-height:0}.embedded #shell>aside,.embedded main>header,.embedded main>footer{display:none}
+.embedded #shell>main,.embedded body.wide main{margin:0;width:100%;max-width:none;padding:4px 2px 20px}
+button{min-height:36px;border-radius:var(--radius-s);padding:7px 12px;background:var(--panel)}
+input,select,textarea{border-radius:var(--radius-s);background:var(--panel);padding:8px 10px}
+.card{border-radius:var(--radius);box-shadow:var(--shadow-1);padding:20px}h2{font-size:17px;letter-spacing:-.2px}
+.embedded .dash{grid-template-columns:minmax(0,1fr) 300px;gap:16px}.embedded .dash-stage{top:0;height:calc(100dvh - 35px);min-height:470px;background:var(--panel)}
+.embedded .dash-side{max-height:calc(100dvh - 35px)}
+.memory-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}.memory-summary{margin-right:auto;color:var(--muted)}
+.memory-list{display:grid;gap:8px;max-height:65dvh;overflow:auto}.memory-list button{text-align:left;display:flex;flex-direction:column;gap:4px;width:100%}.memory-list small{color:var(--muted)}
+.memory-detail-editor{min-height:130px}.credential-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
+@media(max-width:1050px){.embedded .dash{grid-template-columns:1fr}.embedded .dash-stage{height:58dvh;min-height:340px}.embedded .dash-side{max-height:none}}
+@media(max-width:600px){.card{padding:15px}.credential-grid{grid-template-columns:1fr}}

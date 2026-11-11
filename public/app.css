@@ -1,40 +1,4 @@
-/* Conclave design system + app shell.
-   Loaded after style.css and conclave-polish.css: it sets the shared tokens,
-   the responsive shell (sidebar / phone top bar / tab bar / drawer) and the
-   common components every page uses. Page-specific rules stay in the older
-   sheets until those pages are rebuilt. */
-
-/* ---------- tokens ---------- */
-:root {
-  --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f1f3f6; --panel-3: #e8ebf0; --line: #e1e5eb; --line-strong: #cbd2db;
-  --text: #171a1f; --muted: #626b78; --faint: #8b93a0;
-  --accent: #2f6fde; --accent-soft: #e6eefc; --accent-text: #ffffff;
-  --danger: #c4372b; --danger-soft: #fdecea; --ok: #1d8a4c; --ok-soft: #e7f5ed; --warn: #b7791f;
-  --radius-s: 8px; --radius: 12px; --radius-l: 16px;
-  --shadow-1: 0 1px 2px rgb(16 24 40 / .06); --shadow-2: 0 8px 28px rgb(16 24 40 / .14);
-  --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
-  --sb-w: 252px; --topbar-h: 52px; --tabbar-h: 58px;
-  --control-h: 36px;
-  color-scheme: light;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #111317; --panel: #181b20; --panel-2: #1f2329; --panel-3: #272c33; --line: #2a2f37; --line-strong: #3a414b;
-    --text: #e9ebef; --muted: #9aa3b0; --faint: #6f7884;
-    --accent: #79a6ff; --accent-soft: #1c2a44; --accent-text: #0d1730;
-    --danger: #ff7d70; --danger-soft: #3a1f1c; --ok: #4fc483; --ok-soft: #173326; --warn: #e3b04b;
-    --shadow-1: 0 1px 2px rgb(0 0 0 / .3); --shadow-2: 0 12px 36px rgb(0 0 0 / .45);
-    color-scheme: dark;
-  }
-}
-:root[data-theme="dark"] {
-  --bg: #111317; --panel: #181b20; --panel-2: #1f2329; --panel-3: #272c33; --line: #2a2f37; --line-strong: #3a414b;
-  --text: #e9ebef; --muted: #9aa3b0; --faint: #6f7884;
-  --accent: #79a6ff; --accent-soft: #1c2a44; --accent-text: #0d1730;
-  --danger: #ff7d70; --danger-soft: #3a1f1c; --ok: #4fc483; --ok-soft: #173326; --warn: #e3b04b;
-  --shadow-1: 0 1px 2px rgb(0 0 0 / .3); --shadow-2: 0 12px 36px rgb(0 0 0 / .45);
-  color-scheme: dark;
-}
+@import url('/theme.css');
 
 html { -webkit-text-size-adjust: 100%; }
 body {
@@ -332,3 +296,6 @@ body.is-hub .msgs > * { flex-shrink: 0; }
 body.is-hub .msgs .hm.running { min-height: 88px; }
 .av .agent-logo { width: 72%; height: 72%; object-fit: contain; display: block; filter: brightness(0) invert(1); }
 .av.brand-avatar { color: white; }
+
+.assistant-frame{display:block;width:100%;height:calc(100dvh - 90px);min-height:500px;border:0;background:var(--bg);border-radius:var(--radius)}
+@media(max-width:760px){.assistant-frame{height:calc(100dvh - 145px);min-height:420px}}

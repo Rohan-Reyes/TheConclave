@@ -1,3 +1,4 @@
+import { renderAssistant, leaveAssistant } from './views/assistant.js';
 import { renderHome } from './views/home.js';
 import { renderChats } from './views/chats.js';
 import { renderChat } from './views/chat.js';
@@ -14,6 +15,7 @@ import { renderTerminal } from './views/terminal.js';
 import { renderSettings, SHORTCUTS } from './views/settings.js';
 
 const routes = [
+  [/^\/(management|mind|connectors|automations|telegram|assistant-notes|assistant-inbox|assistant-settings)$/, 'assistant', renderAssistant],
   [/^\/?$/, 'home', renderHome],
   [/^\/chats$/, 'chats', renderChats],
   [/^\/chat\/(.+)$/, 'chats', renderChat],
@@ -54,13 +56,14 @@ async function route() {
   const view = $('#view');
   if (!view) return;
   leaveHub();
+  leaveAssistant();
   closeDrawer();
   closeAccountMenu();
   document.body.classList.toggle('is-hub', p.startsWith('/hub'));
   for (const [re, nav, fn] of routes) {
     const m = p.match(re);
     if (!m) continue;
-    setActiveNav(nav);
+    setActiveNav(nav === 'assistant' ? m[1] : nav);
     view.innerHTML = '<div class="empty">Loading…</div>';
     try { await fn(view, params, ...m.slice(1).map(decodeURIComponent)); }
     catch (e) { view.innerHTML = `<div class="empty">Error: ${e.message}</div>`; }
@@ -193,5 +196,6 @@ if (typeof window !== 'undefined') {
   window.addEventListener('hashchange', route);
   route();
   refreshIndexState();
+  api('/api/version').then(v=>{ const badge=$('.version-badge'); if(badge && /^\d+\.\d+\.\d+$/.test(v.version)) badge.textContent='v'+v.version; }).catch(()=>{});
   setInterval(refreshIndexState, 60_000);
 }

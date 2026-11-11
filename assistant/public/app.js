@@ -381,6 +381,14 @@ async function telegram() {
   const c=card('Telegram userbot','Chat with Conclave from your allowed Telegram account. Session credentials are stored encrypted and never shown here.');
   c.append(tag(status.configured?status.health.state:'Authorization required'));
   c.append(el('p','Authorize privately on the server with npm run telegram:setup. A Telegram API ID/hash, userbot login code, optional two-step password, and your numeric owner ID are required.','muted'));
+  const credentials=card('Telegram credentials','Edit these privately here. Saved API hashes and sessions are never displayed. Changing credentials turns delivery off until you enable it again.');
+  const credentialForm=form(credentials,'Save encrypted credentials',async(b,f)=>{await api('/telegram/config',b);f.reset();toast('Credentials saved; enable Telegram when ready');await render();});
+  const appId=field(credentialForm,'Telegram API ID','api_id','number',status.api_id || '',!status.configured);appId.min='1';
+  const hash=field(credentialForm,'API hash (blank keeps saved value)','api_hash','password','',!status.configured);hash.autocomplete='new-password';
+  const owner=field(credentialForm,'Your Telegram numeric user ID','owner_id','number',status.owner_id || '',!status.configured);owner.min='1';
+  const session=field(credentialForm,'Authorized Telethon session (blank keeps saved value)','session','password','',!status.configured);session.autocomplete='new-password';
+  credentialForm.addButton();
+  credentials.append(el('p','Needed: API ID + hash, your numeric owner ID, and a logged-in userbot session. Create the session privately with npm run telegram:setup using the userbot phone number, Telegram login code and optional two-step password. For direct calls, use a separate account from the one receiving the call. Never paste login codes or sessions into chat.','muted'));
   if(!status.configured)return;
   c.append(el('p',`Allowed owner: ${status.owner_id}. In Saved Messages on the same account, prefix requests with /conclave. A separate userbot account can receive ordinary private messages from this owner.`));
   const f=form(c,'Save Telegram settings',async b=>{await api('/telegram/config',{enabled:b.enabled==='on',calls_enabled:b.calls_enabled==='on',notifications:b.notifications==='on'});toast('Telegram settings saved');await render();});

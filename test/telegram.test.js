@@ -18,3 +18,17 @@ test('owner messages are deduplicated, historical messages are ignored and deliv
  await worker.tick();await new Promise(r=>setImmediate(r));assert.equal(sends,1);worker.lastPoll=0;await worker.tick();assert.equal(replies,1);
  db.prepare("INSERT INTO telegram_outbox VALUES('uncertain-fixture','message','fixture','running',?,NULL,NULL)").run(Date.now());new TelegramWorker(db,key,{bridgeFactory:()=>bridge});assert.equal(db.prepare("SELECT state FROM telegram_outbox WHERE id='uncertain-fixture'").get().state,'uncertain');worker.close();db.close();
 });
+test('credential editing encrypts secrets, disables delivery and cancels old queued destinations',()=>{
+ const db=openDb(':memory:');
+ const input={api_id:'12345',api_hash:'ab'.repeat(16),session:'1'+'A'.repeat(352),owner_id:'123456'};
+ configureTelegram(db,key,input);
+ let status=telegramStatus(db,key);assert.equal(status.configured,true);assert.equal(status.enabled,false);assert.equal(status.api_id,12345);
+ assert.ok(!JSON.stringify(status).includes(input.session));assert.ok(!JSON.stringify(status).includes(input.api_hash));
+ configureTelegram(db,key,{enabled:true});queueTelegram(db,key,{kind:'message',text:'old destination',request_id:'old-owner-message'});
+ configureTelegram(db,key,{owner_id:654321});
+ assert.equal(telegramStatus(db,key).enabled,false);
+ assert.equal(db.prepare('SELECT state FROM telegram_outbox WHERE id=?').get('old-owner-message').state,'cancelled');
+ assert.throws(()=>configureTelegram(db,key,{api_hash:'invalid'}),/32 hexadecimal/);
+ assert.throws(()=>configureTelegram(db,key,{owner_id:-100}),/positive numeric/);
+ db.close();
+});

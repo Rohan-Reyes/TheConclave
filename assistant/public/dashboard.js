@@ -1,7 +1,8 @@
 // Dashboard: memory mind map. Loaded after app.js and shares its helpers (api, el, card, button, form, field, actions, toast, date, render).
 const CATEGORY_COLORS = { jarvis: '#7be1c2', preference: '#f5b971', people: '#f28fad', work: '#6fd6b4', routine: '#8ab4ff', health: '#9be27b', places: '#ffd86b', tech: '#b79bff', finance: '#5fd3e8', education: '#ff9f7a', general: '#9fb0bb' };
+const CATEGORY_LIGHT = {jarvis:'#285dbc',preference:'#986013',people:'#b4386a',work:'#14745a',routine:'#315fba',health:'#417817',places:'#876300',tech:'#7444ba',finance:'#096c80',education:'#b34222',general:'#52616b'};
 const SOURCE_LABELS = { chat: 'mentioned in chat', answer: 'used in an answer', viewed: 'opened' };
-const GRAPH_DEFAULTS = { linkLength: 90, repel: 900, gravity: 0.02, related: true, labels: true, spin: true, hidden: [] };
+const GRAPH_DEFAULTS = { linkLength: 90, repel: 900, gravity: 0.02, related: true, labels: true, spin: false, hidden: [] };
 const lit = new Map(); // memory id -> client timestamp when it lit up
 const litChannel = 'BroadcastChannel' in window ? new BroadcastChannel('jarvis-memory') : null;
 function lightUp(ids, at = Date.now()) { for (const memoryId of ids) lit.set(memoryId, Math.max(lit.get(memoryId) || 0, at)); }
@@ -21,7 +22,17 @@ async function dashboard() {
   const hud = el('div', undefined, 'dash-hud'), zoomBar = el('div', undefined, 'dash-zoom');
   stage.append(canvas, hud, zoomBar); wrap.append(stage, side); root.append(wrap);
 
+  const toolbar = el('div', undefined, 'memory-toolbar');
+  const summary = el('span', 'Your linked memory', 'memory-summary');
+  const listPanel = el('section', undefined, 'card memory-list'); listPanel.hidden = true;
+  const mode = button('List view', async () => { listPanel.hidden = !listPanel.hidden; stage.hidden = !listPanel.hidden; mode.textContent = listPanel.hidden ? 'List view' : '3D view'; if (listPanel.hidden) resize(); });
+  const refresh = button('Refresh memories', async () => { await render(); });
+  toolbar.append(summary, mode, refresh); root.insertBefore(toolbar, wrap); stage.after(listPanel);
   const graph = await api('/memories/graph');
+  const fingerprint = data => JSON.stringify(data.nodes.map(n => [n.id,n.content,n.category,n.topic,n.updated_at]));
+  const initialFingerprint = fingerprint(graph);
+  summary.textContent = `${graph.nodes.filter(n => n.type === 'memory').length} memories · relationships show categories, topics and inferred similarities`;
+
   const nodes = graph.nodes.map((n, i) => {
     const angle = i * 2.399963, r = n.type === 'jarvis' ? 0 : n.type === 'category' ? 140 : 220 + (i % 7) * 18;
     const vertical = 1 - 2 * (i + .5) / graph.nodes.length, ring = Math.sqrt(1 - vertical * vertical);
@@ -38,6 +49,15 @@ async function dashboard() {
   const memoryNodes = nodes.filter(n => n.type === 'memory'), categoryNodes = nodes.filter(n => n.type === 'category'), topicNodes = nodes.filter(n => n.type === 'topic');
   const matches = n => !query || `${n.content || ''} ${n.topic || ''} ${graph.categories[n.category] || ''}`.toLowerCase().includes(query);
 
+  function renderList() {
+    listPanel.replaceChildren();
+    for (const n of memoryNodes.filter(n => visible(n) && matches(n))) {
+      const entry = button(n.label, async () => { choose(n); focus(n); detail.scrollIntoView({block:'nearest',behavior:'smooth'}); });
+      entry.append(el('small', `${graph.categories[n.category]} · ${n.source || 'Personal memory'}`));
+      listPanel.append(entry);
+    }
+    if (!listPanel.children.length) listPanel.append(el('p','No memories match these filters.'));
+  }
   // ----- controls -----
   const controls = card('Map controls', null, side);
   const slider = (labelText, key, min, max, step, fmt = v => v) => {
@@ -54,7 +74,7 @@ async function dashboard() {
   const search = document.createElement('input'); search.type = 'search'; search.placeholder = 'Find a memory…'; search.setAttribute('aria-label', 'Find a memory'); controls.append(search);
   const searchResults = el('div'); searchResults.setAttribute('aria-live', 'polite'); controls.append(searchResults);
   search.oninput = () => {
-    query = search.value.trim().toLowerCase(); searchResults.replaceChildren();
+    query = search.value.trim().toLowerCase(); searchResults.replaceChildren(); renderList();
     if (!query) return;
     const found = memoryNodes.filter(matches); searchResults.append(el('p', `${found.length} matching memor${found.length === 1 ? 'y' : 'ies'}`, 'muted'));
     for (const n of found.slice(0, 12)) searchResults.append(button(n.label, async () => { if (opts.hidden.includes(n.category)) { opts.hidden = opts.hidden.filter(c => c !== n.category); updateChips(); persist(); } choose(n); focus(n); }));
@@ -70,16 +90,19 @@ async function dashboard() {
   for (const n of categoryNodes) {
     const chip = el('button', undefined, 'chip'); chip.type = 'button'; const dot = el('i'); dot.style.background = n.color; chip.append(dot, `${n.label} · ${n.count}`);
     chip.dataset.category = n.category; chip.classList.toggle('off', opts.hidden.includes(n.category)); chip.setAttribute('aria-pressed', String(!opts.hidden.includes(n.category)));
-    chip.onclick = () => { opts.hidden = opts.hidden.includes(n.category) ? opts.hidden.filter(c => c !== n.category) : [...opts.hidden, n.category]; updateChips(); alpha = Math.max(alpha, 0.5); persist(); };
+    chip.onclick = () => { opts.hidden = opts.hidden.includes(n.category) ? opts.hidden.filter(c => c !== n.category) : [...opts.hidden, n.category]; updateChips(); renderList(); alpha = Math.max(alpha, 0.5); persist(); };
     chips.append(chip);
   }
   if (!chips.children.length) chips.append(el('p', 'Categories appear once you save memories.', 'muted'));
 
+  const add = card('Add a memory', 'Save a fact or useful context. Inferred connections remain labelled separately.', side);
+  const addForm = form(add, 'Save memory', async (b,f) => { await api('/memories',{content:b.content}); f.reset(); await render(); });
+  const addText = field(addForm, 'Memory', 'content', 'textarea'); addText.maxLength=4000; addText.rows=2; addForm.addButton();
   // ----- ask Jarvis from the map -----
   const ask = card('Ask Jarvis', 'Chat here and watch the memories it draws on light up.', side);
   const answer = el('div', undefined, 'dash-answer'); answer.hidden = true;
   const askForm = form(ask, 'Ask ↑', async (b, f) => {
-    if (!conversation) { const c = await api('/conversations', { title: b.content.slice(0, 60) }); conversation = c.id; }
+    if (!conversation) conversation = await jarvisConversation();
     center.pulse = Date.now(); answer.hidden = false; answer.textContent = 'Thinking…';
     try {
       const r = await api('/messages', { conversation_id: conversation, content: b.content }); announceMemories(r.memory_ids); center.pulse = Date.now(); f.reset();
@@ -108,13 +131,20 @@ async function dashboard() {
     if (metadata.qualification) detail.append(el('p', `Context: ${String(metadata.qualification).replaceAll('_', ' ')}`, 'muted'));
     if (metadata.kind && metadata.kind !== 'fact') detail.append(el('p', 'This imported statement retains its source context; it is not a verified present-day fact.', 'muted'));
     if(n.source==='conclave-shared'){const link=el('a','Edit in shared Conclave Memory →');link.href='/#/memory';detail.append(link);return;}
+    const editor = el('textarea', undefined, 'memory-detail-editor'); editor.value=n.content; editor.maxLength=4000; editor.setAttribute('aria-label','Edit selected memory'); detail.append(editor);
+    const related = links.filter(l => l.kind === 'related' && (l.s === n || l.t === n));
+    if (related.length) {
+      detail.append(el('h3','Inferred similarities'));
+      detail.append(el('p','Shared keywords suggest these links; they are not confirmed facts.','muted'));
+      for (const edge of related) { const other=edge.s===n?edge.t:edge.s; detail.append(button(other.label,async()=>{choose(other);focus(other);})); }
+    }
     const row = el('div', undefined, 'inline-select'), s = document.createElement('select'); s.setAttribute('aria-label', 'Category');
     const auto = el('option', `Automatic (${graph.categories[n.category]})`); auto.value = ''; s.append(auto);
     for (const [v, t] of Object.entries(graph.categories)) { const o = el('option', t); o.value = v; s.append(o); }
     s.value = n.auto ? '' : n.category;
-    row.append(s, button('Save', async () => { await api('/memories', { id: n.id, content: n.content, category: s.value || null }); toast('Category saved'); await render(); }));
+    row.append(s, button('Save', async () => { await api('/memories', { id: n.id, content: editor.value, category: s.value || null }); toast('Memory updated'); await render(); }));
     detail.append(row);
-    actions(detail, [button('Edit in Settings', async () => { location.hash = 'settings'; }, 'subtle')]);
+    actions(detail, [button('Delete memory', async () => { if (!confirm('Delete this memory?')) return; await api(`/memories/${n.id}`,undefined,'DELETE'); await render(); }, 'danger')]);
   }
   function choose(n) {
     selected = n; showDetail(n);
@@ -147,6 +177,12 @@ async function dashboard() {
       addFeed(r.events);
     } catch {} finally { polling = false; }
   }
+  let checking = false;
+  const updateTimer = setInterval(async () => {
+    if (checking || document.hidden || !stage.isConnected) return;
+    checking = true;
+    try { const latest = await api('/memories/graph'); if (running && fingerprint(latest) !== initialFingerprint) { refresh.textContent='New changes · refresh map'; summary.textContent=`${latest.nodes.filter(n=>n.type==='memory').length} saved memories · updates available`; } } catch {} finally { checking=false; }
+  }, 15000);
   await poll(true); const timer = setInterval(() => { if (!stage.isConnected) dispose(); else if (!document.hidden) poll(); }, 3000);
 
   // ----- 3D physics -----
@@ -216,8 +252,15 @@ async function dashboard() {
     const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw), cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch), ax = dx / s, ay = dy / s;
     const z1 = -ay * sp, y = ay * cp; return [ax * cy + z1 * sy, y, -ax * sy + z1 * cy];
   }
+  let paletteMode;
   function draw() {
     const now = Date.now(); const css = getComputedStyle(document.documentElement), themeBg = css.getPropertyValue('--bg').trim() || '#151514', themeText = css.getPropertyValue('--muted').trim() || '#9b978e', themeLine = css.getPropertyValue('--line').trim() || '#33322f'; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, width, height);
+    const light = css.colorScheme === 'light';
+    if (paletteMode !== light) {
+      paletteMode=light;
+      for(const n of nodes) n.color=(light?CATEGORY_LIGHT:CATEGORY_COLORS)[n.type==='jarvis'?'jarvis':n.category] || '#64748b';
+      for(const chip of chips.children) if(chip.querySelector('i')) chip.querySelector('i').style.background=(light?CATEGORY_LIGHT:CATEGORY_COLORS)[chip.dataset.category];
+    }
     const elapsed = Math.min(50, now - lastFrame); lastFrame = now;
     if (opts.spin && !drag && now - lastInput > 2500) cam.yaw += 0.0016 * elapsed / 16.67;
     for (const [memoryId, at] of lit) if (now - at > 20000) lit.delete(memoryId);
@@ -226,6 +269,7 @@ async function dashboard() {
     for (const n of nodes) if (n.type === 'memory') { const g = glow(n); if (g > 0) { heat.set(n.id, g); for (const hub of [`category:${n.category}`, n.topic && `topic:${n.topic.toLowerCase()}`]) if (hub) heat.set(hub, Math.max(heat.get(hub) || 0, g)); } }
     if (heat.size) heat.set('jarvis', Math.max(...heat.values()));
     const live = nodes.filter(n => visible(n) && n.projected), depths = live.map(n => n.depth), near = Math.min(...depths), far = Math.max(...depths), fog = n => 1 - 0.65 * ((n.depth - near) / ((far - near) || 1));
+    const selectedPeers = new Set(selected ? links.filter(l=>l.s===selected||l.t===selected).flatMap(l=>[l.s.id,l.t.id]) : []);
     const sorted = links.filter(l => linkVisible(l) && l.s.projected && l.t.projected).sort((a, b) => (b.s.depth + b.t.depth) - (a.s.depth + a.t.depth));
     for (const l of sorted) {
       const g = l.kind === 'related' ? Math.min(heat.get(l.s.id) || 0, heat.get(l.t.id) || 0) : (heat.get(l.t.id) || 0);
@@ -233,6 +277,7 @@ async function dashboard() {
       const depthAlpha = (fog(l.s) + fog(l.t)) / 2;
       if (g > 0.02) { ctx.strokeStyle = l.t.color; ctx.globalAlpha = (0.35 + g * 0.65) * depthAlpha; ctx.lineWidth = 1.5 + g * 2; ctx.setLineDash([6, 6]); ctx.lineDashOffset = -now / 40; }
       else { ctx.strokeStyle = l.kind === 'related' ? '#5b6f7c' : l.kind === 'topic' ? `${l.s.color}` : themeLine; ctx.globalAlpha = (l.kind === 'related' ? 0.3 : l.kind === 'topic' ? 0.22 : 0.7) * depthAlpha; ctx.lineWidth = l.kind === 'hub' ? 1.6 : 1; ctx.setLineDash(l.kind === 'related' ? [2, 4] : []); }
+      if(selected && !selectedPeers.has(l.s.id) && !selectedPeers.has(l.t.id)) ctx.globalAlpha *= .15;
       ctx.stroke();
     }
     ctx.setLineDash([]); ctx.globalAlpha = 1;
@@ -250,13 +295,13 @@ async function dashboard() {
         ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(n.sx, n.sy, halo, 0, Math.PI * 2); ctx.fill(); r += g * 2.5 * s;
       }
       ctx.beginPath(); ctx.arc(n.sx, n.sy, Math.max(1.5, r), 0, Math.PI * 2);
-      if (n.type === 'jarvis') { const grad = ctx.createRadialGradient(n.sx - r / 4, n.sy - r / 4, 2, n.sx, n.sy, r); grad.addColorStop(0, '#d8fff2'); grad.addColorStop(1, '#2f9f86'); ctx.fillStyle = grad; }
+      if (n.type === 'jarvis') { const grad = ctx.createRadialGradient(n.sx - r / 4, n.sy - r / 4, 2, n.sx, n.sy, r); grad.addColorStop(0, light ? '#c8ddff' : '#c2d9ff'); grad.addColorStop(1, n.color); ctx.fillStyle = grad; }
       else if (n.type === 'memory') { const grad = ctx.createRadialGradient(n.sx - r / 3, n.sy - r / 3, 0, n.sx, n.sy, r); grad.addColorStop(0, g > 0.05 ? '#ffffff' : `${n.color}`); grad.addColorStop(1, g > 0.05 ? n.color : `${n.color}77`); ctx.fillStyle = grad; }
-      else ctx.fillStyle = '#0f1b23';
-      ctx.fill(); ctx.lineWidth = n === selected || match ? 3 : n.type === 'category' ? 2.5 : n.type === 'topic' ? 1.5 : 0.8; ctx.strokeStyle = n === selected || match ? '#ffffff' : n.color;
+      else ctx.fillStyle = css.getPropertyValue('--panel').trim();
+      ctx.fill(); ctx.lineWidth = n === selected || match ? 3 : n.type === 'category' ? 2.5 : n.type === 'topic' ? 1.5 : 0.8; ctx.strokeStyle = n === selected || match ? css.getPropertyValue('--text').trim() : n.color;
       if (n.type === 'topic') ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]);
-      if (n.type === 'jarvis') { ctx.fillStyle = '#0d151c'; ctx.font = `700 ${Math.max(9, 15 * s)}px Inter,Segoe UI,sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('J', n.sx, n.sy + 1); }
-      const labelled = n.type === 'jarvis' || n.type === 'category' || (n.type === 'topic' && s > 0.55) || (opts.labels && n.type === 'memory' && s > 0.9) || g > 0.05 || n === hover || n === selected || match;
+      if (n.type === 'jarvis') { ctx.fillStyle = '#0d151c'; ctx.font = `700 ${Math.max(9, 15 * s)}px Inter,Segoe UI,sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('C', n.sx, n.sy + 1); }
+      const labelled = n.type === 'jarvis' || n.type === 'category' || (n.type === 'topic' && s > 0.55) || (opts.labels && n.type === 'memory' && s > 0.65) || g > 0.05 || n === hover || n === selected || match;
       if (labelled) labelCandidates.push({ n, r, g, match, opacity: ctx.globalAlpha });
       ctx.globalAlpha = 1;
     }
@@ -327,9 +372,9 @@ async function dashboard() {
   };
 
   for (let i = 0; i < Math.min(80,Math.max(12,Math.floor(20000/nodes.length))); i++) tick();
-  alpha = 0.4; resize(); fit(); showDetail(center); loop();
+  alpha = 0.4; resize(); fit(); showDetail(center); renderList(); loop();
   function dispose() {
-    if (!running) return; running = false; cancelAnimationFrame(frame); clearInterval(timer); observer.disconnect(); pointers.clear(); drag = pinch = null;
+    if (!running) return; running = false; cancelAnimationFrame(frame); clearInterval(timer); clearInterval(updateTimer); observer.disconnect(); pointers.clear(); drag = pinch = null;
     canvas.onpointerdown = canvas.onpointermove = canvas.onpointerup = canvas.onpointercancel = canvas.onwheel = canvas.oncontextmenu = canvas.onkeydown = canvas.ondblclick = null;
   }
   return dispose;

@@ -28,7 +28,7 @@ test('one login gates assistant, persists notes, rejects forged identity and rev
   const me=await call('/assistant/api/me');assert.equal((await me.json()).username,'owner');
   const saved=await call('/assistant/api/notes',{title:'Test task',content:'Build a thing'});assert.equal(saved.status,201);
   const notes=await call('/assistant/api/notes');assert.equal((await notes.json())[0].content,'Build a thing');
-  const assets=await call('/assistant/');assert.match(await assets.text(),/\/assistant\/app.js/);
+  const assets=await call('/assistant/');assert.equal(assets.headers.get('x-frame-options'),'SAMEORIGIN');assert.match(assets.headers.get('content-security-policy'),/frame-ancestors 'self'/);assert.match(await assets.text(),/\/assistant\/app.js/);
   const forbidden=await call('/assistant/api/notes',{title:'CSRF',content:'No'},{headers:{Cookie:cookie,Origin:'https://other.invalid','Content-Type':'application/json'}});assert.equal(forbidden.status,403);
   const bypass=await call('/assistant/api/login',{username:'owner',password:'test-password-only-1234'});assert.equal(bypass.status,409);
   await call('/api/auth/logout',{});
