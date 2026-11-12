@@ -8,6 +8,7 @@ import re
 import tempfile
 import time
 import unicodedata
+import uuid
 from array import array
 
 DEFAULT_VOICE = 'en-GB-RyanNeural'
@@ -46,13 +47,14 @@ async def synthesize(text, path, voice=DEFAULT_VOICE):
         raise ValueError('NoSpeechText')
     # Retry synthesis only, never dialing. The second attempt uses another neural voice.
     fallback = 'en-GB-RyanNeural' if voice != 'en-GB-RyanNeural' else 'en-US-AndrewMultilingualNeural'
+    started = time.monotonic()
     for index, chosen in enumerate((voice, fallback)):
         try:
             speech = edge_tts.Communicate(text, chosen, rate='+0%', connect_timeout=4, receive_timeout=6)
             await asyncio.wait_for(speech.save(path), 10)
             if not os.path.getsize(path):
                 raise RuntimeError('EmptySpeech')
-            return
+            return {'attempts': index + 1, 'elapsed_ms': round((time.monotonic() - started) * 1000), 'fallback': bool(index)}
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -94,10 +96,15 @@ class SpeechGate:
 
 class CallAudio:
     def __init__(self, calls, owner_id, config, lock, reply, model_path=None,
-                 notify=lambda state, detail=None: None, text_fallback=None):
+                 notify=lambda state, detail=None: None, text_fallback=None, metric=lambda name, detail: None):
         self.calls, self.owner_id, self.config = calls, owner_id, config
         self.lock, self.reply, self.notify = lock, reply, notify
         self.text_fallback = text_fallback
+        self.metric = metric
+        self.call_id = uuid.uuid4().hex
+        self.turn_index = 0
+        self.frames_dropped = 0
+        self.output_muted = False
         self.model_path, self.model = model_path, None
         self.stage = 'idle'
         self.session_task = self.recognition_task = self.greeting_task = None
@@ -109,6 +116,35 @@ class CallAudio:
         self.speaking = False
         self.last_spoken = ''
         self.tasks = set()
+
+    def _metric(self, name, **detail):
+        # Only numerical/categorical diagnostics: no audio, transcript, credentials or paths.
+        self.metric(name, {'call_id': self.call_id, 'turn': self.turn_index, **detail})
+
+    async def _model_reply(self, text):
+        operation = asyncio.create_task(self.reply(text))
+        hangup = asyncio.create_task(self.closed.wait())
+        started = time.monotonic()
+        outcome = 'cancelled'
+        try:
+            done, _ = await asyncio.wait([operation, hangup], timeout=100, return_when=asyncio.FIRST_COMPLETED)
+            if hangup in done:
+                return None
+            if operation not in done:
+                outcome = 'timeout'
+                raise asyncio.TimeoutError()
+            result = await operation
+            outcome = 'ok'
+            return result
+        except Exception:
+            if outcome != 'timeout': outcome = 'error'
+            raise
+        finally:
+            for task in (operation, hangup):
+                if not task.done(): task.cancel()
+            await asyncio.gather(operation, hangup, return_exceptions=True)
+            self._metric('model', elapsed_ms=round((time.monotonic() - started) * 1000), outcome=outcome)
+            # Cancel only the local wait. Backend model/tool work may already be running.
 
     async def initialize(self):
         from pytgcalls.types import ChatUpdate, StreamFrames, StreamEnded, Direction, Device
@@ -128,12 +164,14 @@ class CallAudio:
                         self.session_task = asyncio.create_task(self.converse())
                         self.tasks.add(self.session_task)
                         self.session_task.add_done_callback(self.tasks.discard)
-            elif isinstance(event, StreamFrames) and event.direction == Direction.INCOMING:
+            elif (isinstance(event, StreamFrames) and event.direction == Direction.INCOMING
+                  and getattr(event,'device',Device.MICROPHONE) in (Device.MICROPHONE,getattr(Device,'SPEAKER',Device.MICROPHONE))):
                 if self.session_task:
                     # Keep listening during speech and model work so interruption is possible.
                     for frame in event.frames:
                         if self.frames.full():
                             self.frames.get_nowait()
+                            self.frames_dropped += 1
                         self.frames.put_nowait(frame.frame)
 
         if self.config.get('conversation_enabled'):
@@ -141,18 +179,27 @@ class CallAudio:
                 raise RuntimeError('LocalSpeechModelMissing')
             from vosk import Model, SetLogLevel
             SetLogLevel(-1)
+            started = time.monotonic()
             self.model = await asyncio.to_thread(Model, self.model_path)
+            self._metric('initialization', elapsed_ms=round((time.monotonic() - started) * 1000), outcome='ok')
             self.greeting_task = asyncio.create_task(self._warm_greeting())
 
     async def _warm_greeting(self):
+        started=time.monotonic()
+        outcome='cancelled'
         try:
             with tempfile.TemporaryDirectory(prefix='conclave-greeting-') as folder:
                 path = os.path.join(folder, 'greeting.mp3')
                 await synthesize(GREETING, path, self.config.get('voice', DEFAULT_VOICE))
                 with open(path, 'rb') as source:
-                    return source.read()
+                    audio=source.read()
+                outcome='ok'
+                return audio
         except Exception:
+            outcome='error'
             return None
+        finally:
+            self._metric('greeting',elapsed_ms=round((time.monotonic()-started)*1000),outcome=outcome)
 
     async def _interruptible(self, awaitable):
         operation = asyncio.ensure_future(awaitable)
@@ -172,13 +219,24 @@ class CallAudio:
     async def interrupt(self):
         if self.interrupted.is_set():
             return
+        started = time.monotonic()
         self.interrupted.set()
+        outcome = 'ok'
         if self.speaking:
-            # Replace outgoing media with silence; preserve the incoming recording path.
             from pytgcalls.types import MediaStream, ExternalMedia
-            with contextlib.suppress(Exception):
+            try:
                 await asyncio.wait_for(self.calls.play(self.owner_id, MediaStream(ExternalMedia.AUDIO)), 3)
-        self.notify('interrupted')
+            except Exception as error:
+                # Mute outgoing audio if stream replacement fails; leave capture running.
+                try:
+                    await asyncio.wait_for(self.calls.mute(self.owner_id), 2)
+                    self.output_muted = True
+                    outcome = 'fallback'
+                except Exception:
+                    outcome = 'error'
+                    self.notify('interruption_failed', {'stage': 'interruption', 'error': type(error).__name__})
+        if outcome != 'error': self.notify('interrupted')
+        self._metric('interruption', elapsed_ms=round((time.monotonic() - started) * 1000), outcome=outcome)
 
     async def say(self, text):
         from pytgcalls.types import MediaStream
@@ -187,6 +245,9 @@ class CallAudio:
         self.notify('speaking')
         self.speaking = True
         self.last_spoken = spoken_text(text)
+        started = time.monotonic()
+        outcome = 'cancelled'
+        stream_ready_ms = None
         preparing = None
         temporary = None
         try:
@@ -202,7 +263,19 @@ class CallAudio:
                 if cached:
                     with open(path,'wb') as output:output.write(cached)
                 else:
-                    await synthesize(chunks[index],path,self.config.get('voice',DEFAULT_VOICE))
+                    synthesis_started = time.monotonic()
+                    synthesis_outcome = 'cancelled'
+                    stats = None
+                    try:
+                        stats = await synthesize(chunks[index],path,self.config.get('voice',DEFAULT_VOICE))
+                        synthesis_outcome = 'ok'
+                    except Exception:
+                        synthesis_outcome = 'error'
+                        raise
+                    finally:
+                        self._metric('synthesis', elapsed_ms=round((time.monotonic()-synthesis_started)*1000),
+                                     outcome=synthesis_outcome, attempts=stats.get('attempts',1) if isinstance(stats,dict) else 1,
+                                     fallback=stats.get('fallback',False) if isinstance(stats,dict) else False)
                 return path
             preparing=asyncio.create_task(prepare(0))
             for index in range(len(chunks)):
@@ -212,13 +285,23 @@ class CallAudio:
                 # Prefetch one next chunk while this chunk plays; never launch all at once.
                 if index+1<len(chunks):preparing=asyncio.create_task(prepare(index+1))
                 self.playback=asyncio.Event()
+                if self.output_muted:
+                    await self.calls.unmute(self.owner_id)
+                    self.output_muted = False
                 with contextlib.redirect_stdout(__import__('sys').stderr):
                     ok,_=await self._interruptible(asyncio.wait_for(self.calls.play(self.owner_id,MediaStream(path)),45))
                 if not ok:return False
+                if stream_ready_ms is None:stream_ready_ms=round((time.monotonic()-started)*1000)
                 ok,_=await self._interruptible(asyncio.wait_for(self.playback.wait(),180))
                 if not ok:return False
+            outcome = 'ok'
             return True
+        except Exception:
+            outcome = 'error'
+            raise
         finally:
+            self._metric('playback', elapsed_ms=round((time.monotonic()-started)*1000), outcome=outcome,
+                         **({'stream_ready_ms':stream_ready_ms} if stream_ready_ms is not None else {}))
             if preparing:
                 preparing.cancel()
                 await asyncio.gather(preparing,return_exceptions=True)
@@ -242,9 +325,25 @@ class CallAudio:
 
     async def _recognize(self):
         from vosk import KaldiRecognizer
-        recognizer = KaldiRecognizer(self.model, 16000)
+        recognizer = None
         gate = SpeechGate()
-        partial, size, overlap = '', 0, False
+        partial, size, overlap, partial_at = '', 0, False, 0.0
+        window_started = time.monotonic()
+        window_count = window_bytes = 0
+        rms_sum = rms_peak = 0.0
+        rms_min = 32768.0
+        def flush_metrics(force=False):
+            nonlocal window_started, window_count, window_bytes, rms_sum, rms_peak, rms_min
+            if window_count and (force or time.monotonic()-window_started >= 5):
+                self._metric('recognition_window', elapsed_ms=round((time.monotonic()-window_started)*1000),
+                             rms_min=round(rms_min,2),rms_mean=round(math.sqrt(rms_sum/max(1,window_bytes)),2),rms_max=round(rms_peak,2),
+                             chunks=window_count,bytes=window_bytes,threshold_rms=450,queue_depth=self.frames.qsize(),
+                             dropped_frames=self.frames_dropped)
+                window_started=time.monotonic();window_count=window_bytes=0
+                rms_sum=rms_peak=0.0;rms_min=32768.0
+        def paused():
+            last_progress=max(gate.last_voice,partial_at)
+            return bool(partial and last_progress and time.monotonic()-last_progress>.65)
         async def queue_text(text):
             if not text or overlap and SpeechGate.echo(text,self.last_spoken):
                 return
@@ -252,42 +351,52 @@ class CallAudio:
                 await self.interrupt()
             if not self.turns.full():
                 self.turns.put_nowait(text[:2000])
+                self._metric('recognition_turn', chars=min(len(text),2000),queue_depth=self.turns.qsize(),outcome='ok')
         async def finish():
-            nonlocal recognizer, gate, partial, size, overlap
+            nonlocal recognizer, gate, partial, size, overlap, partial_at
             raw = await asyncio.to_thread(recognizer.FinalResult)
             text = json.loads(raw).get('text', '').strip()
             await queue_text(text)
             recognizer = KaldiRecognizer(self.model, 16000)
-            gate, partial, size, overlap = SpeechGate(), '', 0, False
+            gate, partial, size, overlap, partial_at = SpeechGate(), '', 0, False, 0.0
         try:
+            recognizer = KaldiRecognizer(self.model, 16000)
             while not self.closed.is_set():
                 try:
                     chunk = await asyncio.wait_for(self.frames.get(), .1)
                 except asyncio.TimeoutError:
-                    if partial and gate.last_voice and time.monotonic() - gate.last_voice > .65:
+                    if paused():
                         await finish()
+                    flush_metrics()
                     continue
                 while not self.frames.empty() and len(chunk) < 6400:
                     chunk += self.frames.get_nowait()
                 overlap = overlap or self.speaking
-                gate.feed(chunk)
+                rms = gate.feed(chunk)
+                window_count += 1;window_bytes += len(chunk)
+                rms_sum += rms*rms*len(chunk);rms_peak=max(rms_peak,rms);rms_min=min(rms_min,rms)
+                flush_metrics()
                 size += len(chunk)
                 complete = await asyncio.to_thread(recognizer.AcceptWaveform, chunk)
-                partial = json.loads(await asyncio.to_thread(recognizer.PartialResult)).get('partial', '')
+                next_partial = json.loads(await asyncio.to_thread(recognizer.PartialResult)).get('partial', '')
+                if next_partial and next_partial != partial:partial_at=time.monotonic()
+                partial = next_partial
                 if (self.speaking or self.stage == 'thinking') and gate.speaking(partial, self.last_spoken if self.speaking else ''):
                     await self.interrupt()
                 if complete:
                     text = json.loads(await asyncio.to_thread(recognizer.Result)).get('text', '').strip()
                     await queue_text(text)
                     recognizer = KaldiRecognizer(self.model, 16000)
-                    gate, partial, size, overlap = SpeechGate(), '', 0, False
-                elif (partial and gate.last_voice and time.monotonic() - gate.last_voice > .65) or size >= 640000:
+                    gate, partial, size, overlap, partial_at = SpeechGate(), '', 0, False, 0.0
+                elif paused() or size >= 640000:
                     await finish()
         except asyncio.CancelledError:
             raise
         except Exception as error:
             self.notify('error', {'stage': 'recognition', 'error': type(error).__name__})
             self.closed.set()
+        finally:
+            flush_metrics(force=True)
 
     async def listen(self, recognizer=None):
         if self.recognition_task:
@@ -315,6 +424,9 @@ class CallAudio:
         from pytgcalls.types import RecordStream, MediaStream, ExternalMedia
         from pytgcalls.types.raw import AudioParameters
         failed = False
+        call_started = time.monotonic()
+        self.call_id=uuid.uuid4().hex
+        self.turn_index=self.frames_dropped=0
         try:
             async with self.lock:
                 self.stage = 'connecting'
@@ -337,6 +449,7 @@ class CallAudio:
                             break
                         if not text or self.closed.is_set():
                             break
+                        self.turn_index += 1
                         self.interrupted.clear()
                         if text in ('goodbye', 'bye jarvis', 'hang up', 'end call', 'stop call'):
                             await self.safe_say('Goodbye.'); break
@@ -344,9 +457,9 @@ class CallAudio:
                             continue
                         self.stage = 'thinking'
                         self.notify('thinking')
-                        answer = await asyncio.wait_for(self.reply(text), 100)
+                        answer = await self._model_reply(text)
                         # Let a queued interruption supersede speech for the previous turn.
-                        if not self.closed.is_set() and not self.interrupted.is_set():
+                        if answer is not None and not self.closed.is_set() and not self.interrupted.is_set():
                             self.stage = 'speaking'
                             await self.safe_say(answer)
         except asyncio.CancelledError:
@@ -355,6 +468,7 @@ class CallAudio:
             failed = True
             self.notify('error', {'stage': self.stage, 'error': type(error).__name__})
         finally:
+            self._metric('call',elapsed_ms=round((time.monotonic()-call_started)*1000),outcome='error' if failed else 'closed')
             if self.recognition_task:
                 self.recognition_task.cancel()
                 await asyncio.gather(self.recognition_task, return_exceptions=True)

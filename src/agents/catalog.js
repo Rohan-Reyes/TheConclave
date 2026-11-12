@@ -50,6 +50,26 @@ export async function getModels(force = false) {
 }
 
 // ---------- plan limits
+// Session logs grow to many MB; the newest rate-limit events are at the end, so read a bounded tail
+// first and fall back to the whole file only when the tail has no matching event.
+const TAIL_BYTES = 512 * 1024;
+export function readTailLines(p, bytes = TAIL_BYTES) {
+  const fd = fs.openSync(p, 'r');
+  try {
+    const size = fs.fstatSync(fd).size, start = Math.max(0, size - bytes), buf = Buffer.alloc(size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    const lines = buf.toString('utf8').split('\n');
+    if (start > 0) lines.shift(); // first line is partial
+    return { lines, partial: start > 0 };
+  } finally { fs.closeSync(fd); }
+}
+function scanLines(p, match, parse) {
+  const tail = readTailLines(p);
+  const find = lines => { for (let i = lines.length - 1; i >= 0; i--) { if (!lines[i].includes(match)) continue; const v = parse(lines[i]); if (v) return v; } return null; };
+  return find(tail.lines) || (tail.partial ? find(fs.readFileSync(p, 'utf8').split('\n')) : null);
+}
+// Cleared when an agent run finishes so credit state reflects the run immediately.
+export function invalidateLimitsCache() { codexCache.at = 0; copilotCache.at = 0; }
 let codexCache = { at: 0, data: null };
 function codexLimits() {
   if (Date.now() - codexCache.at < 30_000) return codexCache.data;
@@ -60,17 +80,13 @@ function readCodexLimits() {
   // Newest rollouts carry rate_limits in their token_count events.
   const files = walk(P.codex.sessions, (p, n) => n.endsWith('.jsonl'))
     .map(p => ({ p, t: fs.statSync(p).mtimeMs })).sort((a, b) => b.t - a.t).slice(0, 5);
+  const win = w => w && { usedPct: w.used_percent, windowMin: w.window_minutes, resetsAt: w.resets_at ? w.resets_at * 1000 : null };
   for (const { p, t } of files) {
-    const lines = fs.readFileSync(p, 'utf8').split('\n');
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (!lines[i].includes('"rate_limits"')) continue;
-      try {
-        const rl = JSON.parse(lines[i]).payload?.rate_limits;
-        if (!rl) continue;
-        const win = w => w && { usedPct: w.used_percent, windowMin: w.window_minutes, resetsAt: w.resets_at ? w.resets_at * 1000 : null };
-        return { primary: win(rl.primary), secondary: win(rl.secondary), seen: new Date(t).toISOString() };
-      } catch {}
-    }
+    const found = scanLines(p, '"rate_limits"', line => {
+      try { const rl = JSON.parse(line).payload?.rate_limits; return rl ? { primary: win(rl.primary), secondary: win(rl.secondary), seen: new Date(t).toISOString() } : null; }
+      catch { return null; }
+    });
+    if (found) return found;
   }
   return null;
 }
@@ -94,13 +110,11 @@ export function readCopilotLimits({ sessionDir = path.join(HOME, '.copilot', 'se
       .slice(0, 5);
 
     for (const { p, t } of sessions) {
-      const lines = fs.readFileSync(p, 'utf8').split('\n');
-      for (let i = lines.length - 1; i >= 0; i--) {
-        if (!lines[i].includes('accountingSnapshot')) continue;
+      const found = scanLines(p, 'accountingSnapshot', line => {
         try {
-          const event = JSON.parse(lines[i]);
+          const event = JSON.parse(line);
           const snap = event.data?.accountingSnapshot;
-          if (!snap) continue;
+          if (!snap) return null;
           const count = value => (typeof value === 'number' || typeof value === 'string' && value.trim() !== '') && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null;
           const nanoAiu = count(snap.totalNanoAiu);
           const requests = count(snap.totalUserRequests);
@@ -115,8 +129,9 @@ export function readCopilotLimits({ sessionDir = path.join(HOME, '.copilot', 'se
             seen: new Date(Number.isFinite(eventTime) ? eventTime : t).toISOString(),
             seenSource: Number.isFinite(eventTime) ? 'event' : 'file',
           };
-        } catch {}
-      }
+        } catch { return null; }
+      });
+      if (found) return found;
     }
   } catch {}
   return null;

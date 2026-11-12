@@ -114,3 +114,32 @@ Ryan is the new default; short generic greetings are prefetched into memory at b
 Incoming calls now run recognition continuously during listening, model work and playback. Sustained audio energy plus recognized words triggers interruption; obvious matching loudspeaker echo and brief noise spikes are filtered. Playback is replaced with a silent external stream, pending TTS/prefetch is cancelled, and the owner's audio remains queued. Roughly 650 ms of quiet can finish an utterance rather than waiting for a long recognition endpoint. If the owner adds speech while a model reply is being generated, the old spoken answer is skipped and the new turn is processed next. This does **not** cancel or undo backend tasks/tool actions already started. Normal Telegram echo cancellation/headphones can still matter; full live acoustic barge-in remains device-dependent.
 
 The Python suite covers speech retry, text fallback, incoming owner gating during playback, interruption during synthesis and playback, retention of new audio, continuous recognition, noise/echo gating, and chunk cleanup. Live incoming-call validation is still needed after deployment; no test call was placed automatically.
+
+## Council release candidate — verification gate pending
+
+This candidate is based on `32d3b43`; it has **not** been released. The deployed interruption update remains `32d3b43`. Step 8 independently reported 174/174 Conclave tests, 17/17 assistant tests, 21/21 tests in the call-audio module, and all three synthetic browser checks passing. These establish regression coverage, not live voice correctness or a measured production speedup.
+
+Included changes cover bounded agent execution (`CONCLAVE_MAX_AGENT_PROCESSES`, default 3), preserved session/workspace locks, independent initial context snapshots, queued states and ordered handoffs; Council-only selection and non-overlapping sidebar regions; paged/lazy chat messages, cached navigation, stale-request protection and multi-page SSE reconciliation; limit-log tail reads, selective gzip and cooperative/deferred indexing; and voice finalization/hangup recovery with bounded numerical diagnostics.
+
+### Measurements available and their limits
+
+- Prior startup indexing: 37 changed items in 737 ms. This is total indexing time, **not** a measured maximum event-loop stall.
+- Prior unauthenticated probes: `/api/version` returned 401 in 3.0 ms; `/` redirected in 10.6 ms. These are **not** authenticated chat-load measurements.
+- Synthetic browser checks cover cached switches and cold fetches with an artificial 220 ms delay, pagination, replay reconciliation and stale-control prevention. They do **not** establish a comparable before/after latency benchmark.
+- No matched baseline/candidate event-loop measurements or owner call against the candidate were captured in step 8. No production speedup or live acoustic success is claimed.
+
+### Required before full release
+
+1. Compare baseline `32d3b43` and this candidate using the same authenticated fixture, history size, browser/device, repeated cold/warm switch procedure and bounded synthetic load. Report request/render timings, payload sizes, event-loop delay and SSE failures. Keep test data and temporary reports outside tracked source. Do not invoke live models for load generation.
+2. Obtain an owner-initiated call against the candidate voice worker: confirm a recognized phrase receives an audible answer, interrupt playback without disconnecting, and inspect sanitized levels/timings for quiet speech and echo. A voice-only, five-minute canary with automatic restoration of the original worker can provide this test without publishing the candidate UI/server. It requires the owner's decision because the reviewer has withheld release approval; do not start it automatically.
+3. Have the reviewer reassess the measurements and call result. Only after that gate passes: commit/push the reviewed source, exclude `node_modules`, private environment files and databases, back up app/data/config, perform an independent rollback-protected restart, and check authenticated public access plus both services and Telegram reconnection.
+
+Release preparation inspected the source/test candidate for the currently configured application secrets and Telegram API hash without printing their values; no matches were found. The untracked `node_modules` symlink is a local dependency artifact and must not be committed. No release commit, GitHub push, production file copy or service restart was performed in this step.
+
+### Follow-up optimization: request cache correctness
+
+The browser request layer now replaces aborted in-flight GETs immediately, keeps cancellation scoped to each caller, and prevents an older request's cleanup from removing its replacement. Mutations invalidate the request generation so pre-update GETs cannot be reused or repopulate the cache. Returned JSON is isolated between callers, abort listeners are detached, and retained response entries are bounded to 128. Agent membership is cached for 10 seconds; the preserved Hub list renders the latest refreshed list instead of its original closure snapshot.
+
+Validation: 178/178 Conclave tests, including four new cache race/cancellation regressions, passed. The chat-loading browser check passed when run separately. It exceeded its 150 ms warm-switch assertion when run simultaneously with the full suite (271.1 ms); this contention-sensitive assertion is not a production latency benchmark. Production was not modified.
+
+The subsequent temporary benchmark report remains provisional: fetch automatically decodes gzip, so its reported body lengths cannot establish compressed wire sizes; full-history and paginated requests represent different workloads. Candidate identity, repeated samples and consistent browser timing windows are still required before using its improvement percentages as release evidence.

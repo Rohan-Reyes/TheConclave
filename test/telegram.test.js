@@ -40,3 +40,33 @@ test('voice conversations use the existing Jarvis chat and require explicit perm
  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id=?').get('existing-jarvis').n,2);
  setSecret(db,'config:telegram',{...voiceConfig,conversation_enabled:false},key);await assert.rejects(()=>worker.voiceReply('No permission'),/disabled/);db.close();
 });
+test('voice diagnostics keep bounded numerical metrics and exclude speech, audio and credentials',async()=>{
+ const {sanitizeVoiceMetric}=await import('../assistant/src/telegram.js');
+ const db=openDb(':memory:');const worker=new TelegramWorker(db,key,{bridgeFactory:()=>null});
+ const metric={name:'recognition_window',call_id:'a'.repeat(32),elapsed_ms:5000,rms_mean:200.25,rms_max:350,threshold_rms:450,chunks:40,bytes:16000,queue_depth:0,turn:1};
+ for(let i=0;i<65;i++)worker.voiceMetric({...metric,turn:i,text:'private transcript',session:'secret-session',audio:'raw-audio',api_hash:'private-key',unexpected:'hidden'});
+ const status=telegramStatus(db,key);assert.equal(status.voice_metrics.length,60);assert.equal(status.voice_metrics[0].turn,5);assert.equal(status.voice_metrics.at(-1).rms_mean,200.25);
+ assert.doesNotMatch(JSON.stringify(status.voice_metrics),/private transcript|secret-session|raw-audio|private-key|hidden/);
+ assert.equal(sanitizeVoiceMetric({...metric,call_id:'owner phone number'}),null);assert.equal(sanitizeVoiceMetric({...metric,name:'arbitrary sensitive text'}),null);
+ const normalized=sanitizeVoiceMetric({...metric,rms_mean:Infinity,elapsed_ms:-1});assert.ok(!('rms_mean' in normalized));assert.ok(!('elapsed_ms' in normalized));db.close();
+});
+test('voice metrics tolerate SQLite write failure and recover on the next event',()=>{
+ const db=openDb(':memory:');const worker=new TelegramWorker(db,key,{bridgeFactory:()=>null});let writesFail=true;
+ worker.db={prepare(sql){if(writesFail && sql.includes("INSERT INTO settings VALUES('telegram:voice:metrics'"))throw new Error('SQLITE_BUSY private details');return db.prepare(sql);}};
+ const metric={name:'model',call_id:'a'.repeat(32),elapsed_ms:25,outcome:'ok'};
+ assert.doesNotThrow(()=>worker.voiceMetric(metric));assert.equal(telegramStatus(db,key).voice_metrics.length,0);
+ writesFail=false;worker.voiceMetric(metric);assert.equal(telegramStatus(db,key).voice_metrics.length,1);db.close();
+});
+test('throwing diagnostic callbacks cannot stop bridge readiness or request replies',async()=>{
+ const {TelegramBridge}=await import('../assistant/src/telegram.js');
+ const {EventEmitter}=await import('node:events');const {PassThrough}=await import('node:stream');
+ const child=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.kill=()=>child.emit('exit',0);
+ child.stdin.on('data',chunk=>{const msg=JSON.parse(chunk.toString());if(msg.id)child.stdout.write(JSON.stringify({id:msg.id,result:{ok:true}})+'\n');});
+ const bridge=new TelegramBridge(config,{spawnProcess:()=>child,onVoiceMetric:()=>{throw new Error('private diagnostics failure');},onVoiceState:()=>Promise.reject(new Error('private state failure'))});
+ try{
+  assert.doesNotThrow(()=>child.stdout.write(JSON.stringify({event:'voice_metric',name:'model',call_id:'a'.repeat(32),elapsed_ms:10})+'\n'));
+  assert.doesNotThrow(()=>child.stdout.write(JSON.stringify({event:'voice_state',state:'listening'})+'\n'));
+  child.stdout.write(JSON.stringify({ready:true})+'\n');await bridge.ready;await new Promise(r=>setImmediate(r));
+  assert.deepEqual(await bridge.request('poll'),{ok:true});assert.equal(bridge.closed,false);
+ }finally{bridge.close();child.stdin.destroy();child.stdout.destroy();}
+});

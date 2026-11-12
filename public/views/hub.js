@@ -14,7 +14,7 @@ const TARGETS = { ...TOOLS, council: 'Council' };
 
 // Custom agents (Gemini CLI, Ollama, ...) join the built-in three.
 async function loadMembers() {
-  const list = await api('/api/members').catch(() => []);
+  const list = await api('/api/members', { cache: 10_000 }).catch(() => []);
   for (const m of list) if (!m.builtin) TOOLS[m.id] = m.label;
   for (const k of Object.keys(TARGETS)) delete TARGETS[k];
   Object.assign(TARGETS, TOOLS, { council: 'Council' });
@@ -23,7 +23,7 @@ const ACCESS = { read: 'Read-only', ask: 'Ask me', edit: 'Can edit', full: 'Full
 const APMODE = { auto: 'Plans run automatically', risk: 'Auto, ask on risky steps', manual: 'I click Run plan' };
 const ROUND_LABEL = { 'context-update': 'added details', synthesis: 'verdict', relay: 'handed off', imported: 'earlier session', build: 'builder', review: 'reviewer', fix: 'fix', 'plan-fix': 'plan fix' };
 const roundLabel = r => !r ? '' : ROUND_LABEL[r] || (r.startsWith('council-') ? `round ${r.split('-')[1]}` : r.startsWith('step-') ? `step ${r.slice(5)}` : r.startsWith('review-') ? `review ${r.slice(7)}` : r.startsWith('fix-') ? `fix ${r.slice(4)}` : r);
-const PHASE = { thinking: 'thinking', writing: 'writing', tool: 'working' };
+const PHASE = { queued: 'queued', starting: 'starting', thinking: 'thinking', writing: 'writing', tool: 'working' };
 const dur = m => {
   if (!m.finished) return '';
   const s = Math.round((new Date(m.finished) - new Date(m.created)) / 1000);
@@ -37,7 +37,90 @@ const store = {
 let es = null;
 let cleanupThread = null;
 let MODELS = null;
-const loadModels = async () => { if (!MODELS) MODELS = await api('/api/models').catch(() => ({})); return MODELS; };
+const loadModels = async () => { if (!MODELS) MODELS = await api('/api/models', { cache: 10000 }).catch(() => ({})); return MODELS; };
+
+const threadCache = new Map();
+let currentRouteGen = 0;
+let currentThreadAbortCtrl = null;
+let currentHubList = [];
+let currentHubDrawList = null;
+let currentActiveThreadId = null;
+let activePendingAttachments = [];
+
+function fetchThreadData(id, signal) {
+  return api(`/api/threads/${id}?limit=60&activity=lazy`, { signal });
+}
+
+function mergeThreadMessages(currentList = [], incomingList = [], incomingPage) {
+  const currentById = new Map(currentList.map(m => [m.id, m]));
+  const incomingById = new Map(incomingList.map(m => [m.id, m]));
+  const merged = [];
+
+  const firstIncomingSeq = incomingPage?.firstSeq ?? incomingList[0]?.seq ?? Infinity;
+  for (const m of currentList) {
+    if (!incomingById.has(m.id) && Number(m.seq) < firstIncomingSeq) {
+      merged.push(m);
+    }
+  }
+
+  for (const inc of incomingList) {
+    const cur = currentById.get(inc.id);
+    if (!cur) {
+      merged.push(inc);
+      continue;
+    }
+
+    const mergedMsg = { ...inc };
+
+    if (cur.status === 'running') {
+      if (inc.status === 'running') {
+        if ((cur.content || '').length > (inc.content || '').length) {
+          mergedMsg.content = cur.content;
+        }
+        if ((cur.activity || []).length > (inc.activity || []).length) {
+          mergedMsg.activity = cur.activity;
+        }
+        mergedMsg.phase = cur.phase || inc.phase;
+      } else if ((cur.content || '').length > (inc.content || '').length) {
+        mergedMsg.content = cur.content;
+      }
+    }
+
+    if (Array.isArray(cur.activity) && cur.activity.length > 0 && (!inc.activity || inc.activity.length === 0)) {
+      mergedMsg.activity = cur.activity;
+    }
+
+    if (Array.isArray(cur.files) && cur.files.length > (inc.files?.length || 0)) {
+      mergedMsg.files = cur.files;
+    }
+
+    merged.push(mergedMsg);
+  }
+
+  const lastIncomingSeq = incomingPage?.lastSeq ?? incomingList.at(-1)?.seq ?? -1;
+  for (const m of currentList) {
+    if (!incomingById.has(m.id) && Number(m.seq) > lastIncomingSeq) {
+      merged.push(m);
+    }
+  }
+
+  merged.sort((a, b) => (Number(a.seq) || 0) - (Number(b.seq) || 0));
+  return merged;
+}
+
+function applyThreadSnapshot(current, incoming) {
+  const mergedMessages = mergeThreadMessages(current?.messages || [], incoming?.messages || [], incoming?.page);
+  return {
+    ...incoming,
+    messages: mergedMessages,
+    page: {
+      hasMore: incoming?.page?.hasMore ?? current?.page?.hasMore ?? false,
+      firstSeq: mergedMessages[0]?.seq ?? null,
+      lastSeq: mergedMessages.at(-1)?.seq ?? null,
+      limit: incoming?.page?.limit ?? 60
+    }
+  };
+}
 
 // Prompt Templates & Slash Prompts
 export const SLASH_TEMPLATES = [
@@ -87,11 +170,83 @@ function applyLayout() {
 }
 
 export async function renderHub(view, params, threadId) {
+  const switchStart = performance.now();
+  applyLayout();
+
+  const existingLayout = view.querySelector('.cv-layout');
+  if (existingLayout) {
+    const isSwitchingChat = currentActiveThreadId !== threadId;
+    const activeInput = $('#input');
+    if (activeInput && currentActiveThreadId && isSwitchingChat) {
+      try {
+        const prevKey = `conclave:draft:${currentActiveThreadId}`;
+        if (activeInput.value.trim() || activePendingAttachments?.length) {
+          store.set(prevKey, JSON.stringify({ text: activeInput.value, attachments: activePendingAttachments || [] }));
+        } else {
+          store.del(prevKey);
+        }
+      } catch {}
+    }
+
+    if (isSwitchingChat) {
+      cleanupThread?.();
+      cleanupThread = null;
+    }
+
+    if (!threadId && currentHubList?.length && !params.get('new') && !params.get('cwd')) {
+      const firstActive = currentHubList.find(t => !t.settings?.archived) || currentHubList[0];
+      if (firstActive) {
+        location.replace('#/hub/' + firstActive.id);
+        return;
+      }
+    }
+
+    $$('#threads a.hub-thread').forEach(a => {
+      a.classList.toggle('on', a.getAttribute('href') === `#/hub/${threadId}`);
+    });
+    if (threadId && !$$('#threads a.hub-thread').some(a => a.getAttribute('href') === `#/hub/${threadId}`)) {
+      currentHubDrawList?.($('#tsearch')?.value || '');
+    }
+
+    if (!threadId) {
+      currentActiveThreadId = null;
+      renderWelcome($('#main'), params);
+      return;
+    }
+
+    // If cold thread, immediately replace old main with loading state so old controls cannot be clicked
+    const isWarm = threadCache.has(threadId);
+    if (!isWarm) {
+      const mainEl = $('#main');
+      if (mainEl) {
+        mainEl.innerHTML = '<div class="hub-main-loading empty"><span class="dots"><i></i><i></i><i></i></span> Loading chat…</div>';
+      }
+    }
+
+    loadMembers();
+    api('/api/threads', { cache: 3000 }).then(l => {
+      currentHubList = l;
+      currentHubDrawList?.($('#tsearch')?.value || '');
+    }).catch(() => {});
+
+    await renderThread($('#main'), threadId, currentHubList, () => {
+      api('/api/threads', { cache: 0 }).then(l => {
+        currentHubList = l;
+        currentHubDrawList?.($('#tsearch')?.value || '');
+      }).catch(() => {});
+    }, null, switchStart);
+    return;
+  }
+
   cleanupThread?.(); cleanupThread = null;
   es?.close(); es = null;
-  applyLayout();
-  await loadMembers();
-  let list = await api('/api/threads').catch(() => []);
+
+  const membersPromise = loadMembers();
+  const listPromise = api('/api/threads', { cache: 3000 }).catch(() => []);
+  const threadPrefetch = threadId ? fetchThreadData(threadId) : null;
+  const [_, listData] = await Promise.all([membersPromise, listPromise]);
+  let list = listData;
+
   if (!threadId && list.length && !params.get('new') && !params.get('cwd')) {
     // Pick the first non-archived or first thread
     const firstActive = list.find(t => !t.settings?.archived) || list[0];
@@ -120,7 +275,7 @@ export async function renderHub(view, params, threadId) {
 
   const drawList = f => {
     const filterText = String(f || '').toLowerCase();
-    const filtered = list.filter(t => !filterText || t.title.toLowerCase().includes(filterText));
+    const filtered = currentHubList.filter(t => !filterText || t.title.toLowerCase().includes(filterText));
     const pinned = filtered.filter(t => t.settings?.pinned && !t.settings?.archived);
     const active = filtered.filter(t => !t.settings?.pinned && !t.settings?.archived);
     const archived = filtered.filter(t => t.settings?.archived);
@@ -129,7 +284,7 @@ export async function renderHub(view, params, threadId) {
       const seamless = typeof t.settings?.sync === 'boolean' ? t.settings.sync : (t.cwd || '').toLowerCase().includes('conclave');
       return `
       <div class="hub-thread-row" style="position:relative">
-        <a class="hub-thread ${t.id === threadId ? 'on' : ''} ${t.settings?.pinned ? 'pinned' : ''}" href="#/hub/${t.id}">
+        <a class="hub-thread ${t.id === currentActiveThreadId ? 'on' : ''} ${t.settings?.pinned ? 'pinned' : ''}" href="#/hub/${t.id}">
           <span class="tgt ${t.target}">${esc(selectionLabel(t,TOOLS))}</span>
           <span class="t">${t.settings?.pinned ? '<span class="pin-badge" title="Pinned">📌</span>' : ''}${esc(t.title)}</span>
           <span class="muted tiny">${seamless ? '<span class="sync-indicator seamless" title="Seamless: synced with Raspberry Pi">☁️</span> ' : '<span class="sync-indicator local" title="Local only">💻</span> '}${t.running ? '<span class="live-dot"></span> working' : (t.otherDeviceWorking ? '<span class="live-dot warn"></span> other device working' : ago(t.updated))} · ${t.n} msgs</span>
@@ -166,6 +321,8 @@ export async function renderHub(view, params, threadId) {
     });
   };
 
+  currentHubList = list;
+  currentHubDrawList = drawList;
   drawList('');
   $('#tsearch')?.addEventListener('input', e => drawList(e.target.value));
   $('#newchat').onclick = () => quickChat();
@@ -179,8 +336,8 @@ export async function renderHub(view, params, threadId) {
 
   if (!threadId) return renderWelcome($('#main'), params);
   await renderThread($('#main'), threadId, list, () => {
-    api('/api/threads').then(l => { list = l; drawList($('#tsearch')?.value || ''); }).catch(() => {});
-  });
+    api('/api/threads', { cache: 0 }).then(l => { list = l; currentHubList = l; drawList($('#tsearch')?.value || ''); }).catch(() => {});
+  }, threadPrefetch, switchStart);
 }
 
 function renderWelcome(box, params) {
@@ -272,12 +429,65 @@ function newChatDialog(presetCwd, initialSelection = {target:'claude'}) {
   });
 }
 
-async function renderThread(box, id, list, onListChanged) {
+async function renderThread(box, id, list, onListChanged, preloadedPromise, startTime) {
+  const switchStart = startTime || performance.now();
+  const isWarm = threadCache.has(id);
+
+  const prevInput = $('#input');
+  if (prevInput && currentActiveThreadId && currentActiveThreadId !== id) {
+    try {
+      const prevKey = `conclave:draft:${currentActiveThreadId}`;
+      if (prevInput.value.trim() || activePendingAttachments?.length) {
+        store.set(prevKey, JSON.stringify({ text: prevInput.value, attachments: activePendingAttachments || [] }));
+      } else {
+        store.del(prevKey);
+      }
+    } catch {}
+  }
+  currentActiveThreadId = id;
+
   cleanupThread?.(); cleanupThread = null;
+  const routeGen = ++currentRouteGen;
+  if (currentThreadAbortCtrl) {
+    currentThreadAbortCtrl.abort();
+    currentThreadAbortCtrl = null;
+  }
+  const abortCtrl = new AbortController();
+  currentThreadAbortCtrl = abortCtrl;
   let disposed = false;
-  let t = await api('/api/threads/' + id);
+
+  const cached = threadCache.get(id);
+  let t = cached;
   let selectionControl;
-  if (disposed) return;
+
+  if (!t) {
+    try {
+      t = await (preloadedPromise || fetchThreadData(id, abortCtrl.signal));
+    } catch (err) {
+      if (err.name === 'AbortError' || abortCtrl.signal.aborted) return;
+      toast('Failed to load chat: ' + err.message, true);
+      box.innerHTML = `<div class="empty">Failed to load chat: ${esc(err.message)}</div>`;
+      return;
+    }
+    if (disposed || routeGen !== currentRouteGen || abortCtrl.signal.aborted) return;
+    threadCache.set(id, t);
+  } else {
+    (preloadedPromise || fetchThreadData(id, abortCtrl.signal)).then(fresh => {
+      if (disposed || routeGen !== currentRouteGen || abortCtrl.signal.aborted || !fresh) return;
+      t = applyThreadSnapshot(t, fresh);
+      threadCache.set(id, t);
+      const titleEl = $('#title');
+      if (titleEl && titleEl.value !== t.title && document.activeElement !== titleEl) titleEl.value = t.title;
+      const cwdEl = $('#cwd');
+      if (cwdEl && cwdEl.value !== t.cwd && document.activeElement !== cwdEl) cwdEl.value = t.cwd;
+      draw();
+      drawChrome();
+    }).catch(err => {
+      if (err.name !== 'AbortError' && !abortCtrl.signal.aborted) {
+        console.warn('Background thread refresh failed:', err);
+      }
+    });
+  }
   let limits = {}, credits = {};
   let pendingAttachments = [];
   let sending = false;
@@ -296,7 +506,7 @@ async function renderThread(box, id, list, onListChanged) {
         <div class="row hub-head-row1" style="align-items:center;gap:6px">
           <button type="button" class="mobile-chats-btn" id="btn-mobile-chats" title="View all chats">← Chats</button>
           <input class="title-input" id="title" value="${esc(t.title)}" aria-label="Chat title">
-          <span class="reconnect-pill connected" id="reconnect-pill" title="Connection status"><i class="status-dot"></i><span class="status-txt">Connected</span></span>
+          <span class="reconnect-pill connecting" id="reconnect-pill" title="Connecting to live stream…"><i class="status-dot"></i><span class="status-txt">Connecting…</span></span>
         </div>
         <div class="row small hub-head-sub" style="align-items:center;gap:6px;flex-wrap:wrap">
           <svg class="ic"><use href="#i-folder"/></svg><input id="cwd" class="mono small cwd-input" list="cwd-list" value="${esc(t.cwd)}" aria-label="Working folder" title="Change the folder agents work in"><datalist id="cwd-list"></datalist>
@@ -508,8 +718,14 @@ async function renderThread(box, id, list, onListChanged) {
   const setConn = (cls, txt) => {
     if (!pill) return;
     pill.className = `reconnect-pill ${cls}`;
-    pill.querySelector('.status-txt').textContent = txt;
+    const txtEl = pill.querySelector('.status-txt');
+    if (txtEl) txtEl.textContent = txt;
+    pill.title = cls === 'connected' ? 'Live stream connected'
+      : cls === 'reconnecting' ? 'Reconnecting to live stream…'
+      : cls === 'connecting' ? 'Connecting to live stream…'
+      : 'Live stream disconnected';
   };
+  window.__cvSetConn = setConn;
 
   // Attachments Handling
   function fileIcon(name = '') {
@@ -675,6 +891,7 @@ async function renderThread(box, id, list, onListChanged) {
   // Persistent Composer Draft
   function saveDraft() {
     try {
+      activePendingAttachments = pendingAttachments;
       if (!input.value.trim() && !pendingAttachments.length) store.del(draftKey);
       else store.set(draftKey, JSON.stringify({ text: input.value, attachments: pendingAttachments }));
     } catch {}
@@ -688,6 +905,7 @@ async function renderThread(box, id, list, onListChanged) {
       if (d.text && !input.value) { input.value = d.text; grow(); }
       if (Array.isArray(d.attachments) && d.attachments.length) {
         pendingAttachments = d.attachments;
+        activePendingAttachments = pendingAttachments;
         renderAttachmentChips();
       }
     } catch {}
@@ -714,9 +932,11 @@ async function renderThread(box, id, list, onListChanged) {
     const who = m.role === 'user' ? 'You' : m.role === 'system' ? 'Conclave' : TOOLS[m.tool] || m.tool;
     const run = m.status === 'running';
     const phase = run ? (m.phase || (m.content ? 'writing' : 'thinking')) : null;
-    const act = m.activity?.length ? `<details class="tool act"><summary>⚙ ${m.activity.length} action${m.activity.length > 1 ? 's' : ''}</summary><pre>${esc(m.activity.join('\n'))}</pre></details>` : '';
+    const count = m.activityCount ?? m.activity?.length ?? 0;
+    const hasLoadedActivity = Array.isArray(m.activity) && m.activity.length > 0;
+    const act = count ? `<details class="tool act" data-mid="${m.id}"><summary>⚙ ${count} action${count > 1 ? 's' : ''}</summary><pre>${hasLoadedActivity ? esc(m.activity.join('\n')) : 'Loading actions…'}</pre></details>` : '';
     const body = m.content ? md(m.content) : run ? '' : '';
-    const status = run ? `<span class="phase-label">${PHASE[phase] || 'working'}${phase === 'tool' && lastAct(m) ? ': <span class="mono">' + esc(lastAct(m).slice(0, 80)) + '</span>' : ''}</span>`
+    const status = run ? `<span class="phase-label phase-${phase}">${PHASE[phase] || 'working'}${phase === 'tool' && lastAct(m) ? ': <span class="mono">' + esc(lastAct(m).slice(0, 80)) + '</span>' : ''}</span>`
       : m.status === 'error' ? '<span style="color:var(--danger)">failed</span>' : m.status === 'stopped' ? 'stopped'
       : new Date(m.created).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     return `${actions(m)}
@@ -750,6 +970,12 @@ async function renderThread(box, id, list, onListChanged) {
       return [el.dataset.qid, { value: inp?.value || '', focused: document.activeElement === inp }];
     }));
     const out = [];
+    if (t.page?.hasMore) {
+      out.push(`
+        <div class="load-earlier-wrap" id="load-earlier-wrap" style="text-align:center;padding:8px 0 14px 0;">
+          <button type="button" class="btn-load-earlier small ghost" id="btn-load-earlier" title="Load older messages">↑ Load earlier messages</button>
+        </div>`);
+    }
     const L = t.messages;
     const plansByMsg = new Map((t.plans || []).map(p => [p.message_id, p]));
     let i = 0;
@@ -823,7 +1049,8 @@ async function renderThread(box, id, list, onListChanged) {
     w.hidden = !runningMsgs.length;
     if (runningMsgs.length) w.innerHTML = runningMsgs.map(m => {
       const ph = m.phase || (m.content ? 'writing' : 'thinking');
-      return `<span class="work-chip ${esc(m.tool)} ph-${ph}">${agentAvatar(m.tool,TOOLS[m.tool] || m.tool,true)}${esc(TOOLS[m.tool] || m.tool)} is ${PHASE[ph] || 'working'}${ph === 'tool' && lastAct(m) ? ` <span class="mono tiny">${esc(lastAct(m).slice(0, 50))}</span>` : ''}</span>`;
+      const phaseTxt = ph === 'queued' ? 'is queued' : ph === 'starting' ? 'is starting' : (PHASE[ph] || 'working');
+      return `<span class="work-chip ${esc(m.tool)} ph-${ph}">${agentAvatar(m.tool,TOOLS[m.tool] || m.tool,true)}${esc(TOOLS[m.tool] || m.tool)} ${phaseTxt}${ph === 'tool' && lastAct(m) ? ` <span class="mono tiny">${esc(lastAct(m).slice(0, 50))}</span>` : ''}</span>`;
     }).join('');
     const teamEl = $('#team');
     if (teamEl) teamEl.innerHTML = teamStripHtml(t.team || [], TOOLS, limits, credits, new Set(runningMsgs.map(m => m.tool)));
@@ -872,12 +1099,82 @@ async function renderThread(box, id, list, onListChanged) {
   draw();
   loadDraft();
   msgs.scrollTop = msgs.scrollHeight;
-  Promise.all([api('/api/limits').catch(() => ({})), api('/api/credits').catch(() => ({}))]).then(([l, c]) => { limits = l; credits = c; drawWorking(); });
+  const switchDuration = Math.round((performance.now() - switchStart) * 100) / 100;
+  const switchMetric = {
+    type: isWarm ? 'warm' : 'cold',
+    threadId: id,
+    durationMs: switchDuration,
+    timestamp: Date.now()
+  };
+  window.__cvLastSwitch = switchMetric;
+  window.__cvSwitchMetrics = window.__cvSwitchMetrics || [];
+  window.__cvSwitchMetrics.push(switchMetric);
+  if (window.__cvSwitchMetrics.length > 30) window.__cvSwitchMetrics.shift();
+  Promise.all([
+    api('/api/limits', { cache: 5000 }).catch(() => ({})),
+    api('/api/credits', { cache: 5000 }).catch(() => ({}))
+  ]).then(([l, c]) => {
+    if (disposed || routeGen !== currentRouteGen) return;
+    limits = l; credits = c; drawWorking();
+  });
 
   bindFileChips(msgs);
   bindPlanAndQuestions(msgs, id, () => refresh());
 
+  msgs.addEventListener('toggle', async e => {
+    const det = e.target.closest('details.tool.act');
+    if (!det || !det.open) return;
+    const mid = det.dataset.mid;
+    if (!mid) return;
+    const m = t.messages.find(x => x.id === mid);
+    if (!m) return;
+    if (!m.activity || !m.activity.length) {
+      const pre = det.querySelector('pre');
+      if (pre) pre.textContent = 'Loading actions…';
+      try {
+        const res = await api(`/api/threads/${id}/messages/${mid}/activity`);
+        m.activity = res.activity || [];
+        if (pre) pre.textContent = m.activity.join('\n') || 'No actions recorded.';
+      } catch (err) {
+        if (pre) pre.textContent = 'Failed to load actions: ' + err.message;
+      }
+    }
+  }, true);
+
   msgs.addEventListener('click', async e => {
+    const loadEarlierBtn = e.target.closest('#btn-load-earlier');
+    if (loadEarlierBtn && !loadEarlierBtn.disabled) {
+      loadEarlierBtn.disabled = true;
+      loadEarlierBtn.textContent = 'Loading earlier messages…';
+      const prevScrollHeight = msgs.scrollHeight;
+      const prevScrollTop = msgs.scrollTop;
+      try {
+        const firstSeq = t.page?.firstSeq ?? t.messages[0]?.seq;
+        const res = await api(`/api/threads/${id}/messages?before=${firstSeq}&limit=60&activity=lazy`);
+        if (disposed || !res?.messages) return;
+
+        const existingIds = new Set(t.messages.map(m => m.id));
+        const toPrepend = res.messages.filter(m => !existingIds.has(m.id));
+        t.messages = [...toPrepend, ...t.messages];
+        t.page = {
+          ...t.page,
+          hasMore: !!res.hasMore,
+          firstSeq: res.firstSeq
+        };
+        threadCache.set(id, t);
+        draw();
+
+        const newScrollHeight = msgs.scrollHeight;
+        msgs.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+      } catch (err) {
+        toast('Failed to load earlier messages: ' + err.message, true);
+        if (loadEarlierBtn) {
+          loadEarlierBtn.disabled = false;
+          loadEarlierBtn.textContent = '↑ Load earlier messages';
+        }
+      }
+      return;
+    }
     const d = e.target.closest('[data-decide]');
     if (d) {
       const aid = d.closest('[data-approval]').dataset.approval;
@@ -962,9 +1259,10 @@ async function renderThread(box, id, list, onListChanged) {
   const refresh = async () => {
     if (disposed) return;
     const was = t.running;
-    const next = await api('/api/threads/' + id).catch(() => null);
-    if (disposed || !next) return;
-    t = next;
+    const next = await api(`/api/threads/${id}?limit=60&activity=lazy`, { signal: abortCtrl.signal }).catch(() => null);
+    if (disposed || !next || routeGen !== currentRouteGen) return;
+    t = applyThreadSnapshot(t, next);
+    threadCache.set(id, t);
     draw();
     if (was !== t.running) onListChanged?.();
     if (was && !t.running) notifyDone(t);
@@ -1004,26 +1302,68 @@ async function renderThread(box, id, list, onListChanged) {
   };
   cleanupThread = () => {
     disposed = true;
+    abortCtrl.abort();
     clearInterval(remoteTimer);
     clearTimeout(pendingDraw);
     for (const timer of patchTimers.values()) clearTimeout(timer);
     patchTimers.clear();
+    setConn('disconnected', 'Closed');
     es?.close();
     es = null;
+    window.__cvEs = null;
+    const sendBtn = $('#send'); if (sendBtn) sendBtn.disabled = true;
+    const nowBtn = $('#now'); if (nowBtn) nowBtn.disabled = true;
+    const inp = $('#input'); if (inp) inp.disabled = true;
   };
 
   // Setup EventSource with reconnect handling
   es = location.search.includes('snap') ? { close() {} } : new EventSource(`/api/threads/${id}/events`);
+  window.__cvEs = es;
   es.onopen = () => {
     setConn('connected', 'Live');
   };
   es.onerror = () => {
-    setConn('reconnecting', 'Reconnecting…');
+    if (!es || es.readyState === 2) {
+      setConn('disconnected', 'Disconnected');
+    } else {
+      setConn('reconnecting', 'Reconnecting…');
+    }
   };
   es.onmessage = ev => {
     setConn('connected', 'Live');
     const e = JSON.parse(ev.data);
     const find = mid => t.messages.find(x => x.id === mid);
+    if (e.type === 'hello') {
+      const serverLastSeq = Number(e.lastSeq) || 0;
+      const localMaxSeq = Math.max(0, ...(t.messages || []).map(m => Number(m.seq) || 0));
+      if (serverLastSeq > localMaxSeq) {
+        (async () => {
+          let cursor = localMaxSeq;
+          let changed = false;
+          while (!disposed && routeGen === currentRouteGen && cursor < serverLastSeq) {
+            const res = await api(`/api/threads/${id}/messages?after=${cursor}&limit=60&activity=lazy`).catch(() => null);
+            if (disposed || routeGen !== currentRouteGen || !res?.messages?.length) break;
+            for (const msg of res.messages) {
+              const idx = t.messages.findIndex(m => m.id === msg.id);
+              if (idx >= 0) {
+                t.messages[idx] = msg;
+              } else {
+                t.messages.push(msg);
+                changed = true;
+              }
+              if (Number(msg.seq) > cursor) cursor = Number(msg.seq);
+            }
+            if (!res.hasMore) break;
+          }
+          if (changed && !disposed && routeGen === currentRouteGen) {
+            t.messages.sort((a, b) => (Number(a.seq) || 0) - (Number(b.seq) || 0));
+            threadCache.set(id, t);
+            soonDraw();
+          }
+        })();
+      }
+      return;
+    }
     if (e.type === 'message') {
       const idx = t.messages.findIndex(m => m.id === e.message.id);
       if (idx >= 0) { const was = t.messages[idx]; t.messages[idx] = e.message; if (was.status === 'running' && e.message.status === 'running') soonPatch(e.message); else soonDraw(); }
@@ -1055,7 +1395,7 @@ async function renderThread(box, id, list, onListChanged) {
   };
 
   async function send(body) {
-    if (sending) return;
+    if (sending || disposed || routeGen !== currentRouteGen) return;
     sending = true;
     try {
       let text = String(body.text || '').trim();
@@ -1114,6 +1454,7 @@ async function renderThread(box, id, list, onListChanged) {
       input.value = '';
       grow();
       pendingAttachments = [];
+      activePendingAttachments = [];
       renderAttachmentChips();
       slashBox.hidden = true;
       store.del(draftKey);
@@ -1256,7 +1597,11 @@ async function renderThread(box, id, list, onListChanged) {
     location.hash = '#/hub';
   };
   $('#settings').onclick = () => settingsDialog(t, saveSettings);
-  api('/api/projects').then(ps => { $('#cwd-list').innerHTML = ps.filter(p => p.exists).map(p => `<option value="${esc(p.path)}">`).join(''); }).catch(() => {});
+  api('/api/projects', { cache: 10000 }).then(ps => {
+    if (disposed || routeGen !== currentRouteGen) return;
+    const el = $('#cwd-list');
+    if (el) el.innerHTML = ps.filter(p => p.exists).map(p => `<option value="${esc(p.path)}">`).join('');
+  }).catch(() => {});
 
   // Model + effort for the selected tool (saved per chat).
   function drawPickers() {
@@ -1287,7 +1632,10 @@ async function renderThread(box, id, list, onListChanged) {
   };
   $('#model').onchange = savePick;
   $('#effort').onchange = savePick;
-  loadModels().then(drawPickers);
+  loadModels().then(() => {
+    if (disposed || routeGen !== currentRouteGen) return;
+    drawPickers();
+  });
   input.focus();
 }
 
@@ -1418,6 +1766,18 @@ function settingsDialog(t, save) {
 }
 
 export function leaveHub() {
+  const activeInput = $('#input');
+  if (activeInput && currentActiveThreadId) {
+    try {
+      const prevKey = `conclave:draft:${currentActiveThreadId}`;
+      if (activeInput.value.trim() || activePendingAttachments?.length) {
+        store.set(prevKey, JSON.stringify({ text: activeInput.value, attachments: activePendingAttachments || [] }));
+      } else {
+        store.del(prevKey);
+      }
+    } catch {}
+  }
+  currentActiveThreadId = null;
   cleanupThread?.(); cleanupThread = null;
   es?.close(); es = null;
   if (typeof document !== 'undefined') document.body.classList.remove('focus-mode', 'list-collapsed', 'mobile-list-open');

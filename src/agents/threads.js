@@ -10,7 +10,7 @@ import { runTurn, member, memberIds, isAgentAvailable } from './drivers.js';
 import { snapshot, diffStat, diffText, revert } from './snapshot.js';
 import { denyForMessage, approvalBus, listApprovals } from './approvals.js';
 import { isQuotaError, isLaunchError, exhaustionSummary, markExhausted, outOfCredits, otherAgyBucket, fmtTime } from './failover.js';
-import { getLimits } from './catalog.js';
+import { getLimits, invalidateLimitsCache } from './catalog.js';
 import { kvGet, kvSet } from '../db.js';
 import { loadTranscript } from '../indexer.js';
 import { parsePlan, validatePlan, nextBatch, assign, PLAN_FORMAT } from './planner.js';
@@ -51,6 +51,42 @@ const submitting = new Set();
 const running = new Map();         // threadId -> { handles:Set, cancelled }
 const workspaceWriters = new Map(); // canonical folder -> promise tail (shared across chats)
 const agentTurns = new Map();       // thread/tool -> promise tail (native session is exclusive)
+
+// Global execution capacity is acquired after session/workspace locks, at runTurn.
+// Configure 1..16 concurrent agent attempts; malformed values use the Pi default of 3.
+const processWaiters = [];
+let activeProcesses = 0;
+function processLimit() {
+  const value = Number(process.env.CONCLAVE_MAX_AGENT_PROCESSES ?? 3);
+  return Number.isInteger(value) && value >= 1 && value <= 16 ? value : 3;
+}
+export function getAgentProcessStats() { return { limit: processLimit(), active: activeProcesses, queued: processWaiters.length }; }
+function drainProcessWaiters() {
+  while (activeProcesses < processLimit() && processWaiters.length) {
+    const waiter = processWaiters.shift();
+    waiter.control.onCancel.delete(waiter.cancel);
+    if (running.get(waiter.threadId) !== waiter.control || waiter.control.cancelled) { waiter.resolve(null); continue; }
+    activeProcesses++;
+    let released = false;
+    waiter.resolve(() => { if (released) return; released = true; activeProcesses--; drainProcessWaiters(); });
+  }
+}
+async function withAgentProcess(threadId, fn) {
+  const control = running.get(threadId);
+  if (!control || control.cancelled) return null;
+  const release = await new Promise(resolve => {
+    const waiter = { threadId, control, resolve };
+    waiter.cancel = () => { const i = processWaiters.indexOf(waiter); if (i >= 0) { processWaiters.splice(i, 1); resolve(null); drainProcessWaiters(); } };
+    control.onCancel.add(waiter.cancel);
+    processWaiters.push(waiter);
+    drainProcessWaiters();
+  });
+  if (!release) return null;
+  try {
+    if (running.get(threadId) !== control || control.cancelled) return null;
+    return await fn();
+  } finally { release(); }
+}
 
 let lockProvider = null;
 export function setLockProvider(provider) { lockProvider = provider; }
@@ -154,10 +190,52 @@ export function listThreads() {
   return getDb().prepare(`SELECT t.*, (SELECT COUNT(*) FROM thread_messages m WHERE m.thread_id = t.id) AS n
     FROM threads t ORDER BY updated DESC`).all().map(rowToThread);
 }
-export function getThread(id) {
+// Number of chats with an active job (used to defer background indexing while agents work).
+export function activeJobCount() { return running.size; }
+
+// Finished messages can drop their (often large) tool-activity log; the client loads it on demand.
+const lean = m => m.status === 'running' ? m : { ...m, activityCount: m.activity.length, activity: [] };
+const clampLimit = v => Math.max(1, Math.min(500, Math.floor(Number(v)) || 60));
+
+// Paged message reads by seq cursor. `before` returns the newest `limit` messages older than it;
+// `after` returns messages newer than it (reconnect reconciliation). Neither returns everything.
+export function getMessages(id, { before, after, limit, activity = 'full' } = {}) {
+  const db = getDb(), n = clampLimit(limit), given = v => v !== undefined && v !== null && v !== '';
+  let rows, hasMore;
+  if (given(after)) {
+    rows = db.prepare('SELECT * FROM thread_messages WHERE thread_id = ? AND seq > ? ORDER BY seq LIMIT ?').all(id, Number(after) || 0, n + 1);
+    hasMore = rows.length > n; rows = rows.slice(0, n);              // more newer messages remain
+  } else {
+    const cursor = given(before) ? Number(before) : Number.MAX_SAFE_INTEGER;
+    rows = db.prepare('SELECT * FROM thread_messages WHERE thread_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?').all(id, cursor, n + 1);
+    hasMore = rows.length > n; rows = rows.slice(0, n).reverse();    // more older messages remain
+  }
+  const messages = rows.map(rowToMsg).map(activity === 'lazy' ? lean : m => m);
+  return { messages, hasMore, firstSeq: messages[0]?.seq ?? null, lastSeq: messages.at(-1)?.seq ?? null };
+}
+
+export function getMessageActivity(threadId, messageId) {
+  const row = getDb().prepare('SELECT * FROM thread_messages WHERE id = ? AND thread_id = ?').get(messageId, threadId);
+  if (!row) throw Object.assign(new Error('message not found'), { status: 404 });
+  return { id: row.id, activity: rowToMsg(row).activity };
+}
+
+export function lastMessageSeq(threadId) {
+  return getDb().prepare('SELECT MAX(seq) AS s FROM thread_messages WHERE thread_id = ?').get(threadId)?.s ?? 0;
+}
+
+// Without options this returns the full transcript exactly as before (existing API consumers).
+export function getThread(id, { limit, before, activity } = {}) {
   const t = rowToThread(getDb().prepare('SELECT * FROM threads WHERE id = ?').get(id));
   if (!t) throw Object.assign(new Error('chat not found'), { status: 404 });
-  t.messages = getDb().prepare('SELECT * FROM thread_messages WHERE thread_id = ? ORDER BY seq').all(id).map(rowToMsg);
+  if (limit !== undefined || before !== undefined) {
+    const page = getMessages(id, { before, limit, activity });
+    t.messages = page.messages;
+    t.page = { hasMore: page.hasMore, firstSeq: page.firstSeq, lastSeq: page.lastSeq, limit: clampLimit(limit) };
+  } else {
+    t.messages = getDb().prepare('SELECT * FROM thread_messages WHERE thread_id = ? ORDER BY seq').all(id).map(rowToMsg);
+    if (activity === 'lazy') t.messages = t.messages.map(lean);
+  }
   t.sessions = getDb().prepare('SELECT tool, native_id FROM thread_sessions WHERE thread_id = ?').all(id);
   t.approvals = listApprovals(id);
   t.plans = listPlans(id);
@@ -321,9 +399,9 @@ function preamble(thread, tool) {
   ].filter(Boolean).join('\n');
 }
 
-function buildPrompt(thread, tool, instruction) {
+function buildPrompt(thread, tool, instruction, contextSnapshot = null) {
   const s = session(thread.id, tool);
-  const all = getDb().prepare("SELECT * FROM thread_messages WHERE thread_id = ? AND status != 'running' ORDER BY seq").all(thread.id);
+  const all = contextSnapshot?.messages || getDb().prepare("SELECT * FROM thread_messages WHERE thread_id = ? AND status != 'running' ORDER BY seq").all(thread.id);
   const maxSeq = all.length ? all[all.length - 1].seq : 0;
   const fresh = !s.native_id;
   const unseen = all.filter(m => m.seq > s.last_seen_seq && !(m.role === 'agent' && m.tool === tool));
@@ -340,7 +418,7 @@ function buildPrompt(thread, tool, instruction) {
   } else {
     parts.push('--- New messages in the Conclave chat since your last reply ---\n' + (formatMessages(unseen, PROMPT_BUDGET) || '(none)'));
   }
-  if (activeMembers(thread).length > 1) parts.push('--- Team (roles and current usage limits; plan around them) ---\n' + teamStatus(thread));
+  if (activeMembers(thread).length > 1) parts.push('--- Team (roles and current usage limits; plan around them) ---\n' + (contextSnapshot?.teamStatus || teamStatus(thread)));
   if (instruction) parts.push('--- Your task now ---\n' + instruction);
   else parts.push('Reply to the latest message addressed to you.');
   return { prompt: parts.join('\n\n'), maxSeq, nativeId: s.native_id };
@@ -360,20 +438,39 @@ const isCancelled = threadId => {
 };
 
 async function runAgentOnce(thread, tool, opts = {}) {
-  // Always take the session lock before the workspace lock. A read task and a
-  // build task can be scheduled together, but cannot resume one native session
-  // simultaneously. Different tools can still perform independent reads.
-  return withAgentTurn(thread.id, tool, () => {
-    // Recheck after waiting, since access may have been tightened meanwhile.
-    const current = getThread(thread.id);
-    const currentOpts = current.settings.permission === 'read' ? { ...opts, permission: 'read' } : opts;
-    const permission = currentOpts.permission || current.settings.permission;
-    if (permission === 'read') return runAgentUnlocked(current, tool, currentOpts);
-    return withWorkspaceWriter(current.cwd, () => runAgentUnlocked(current, tool, currentOpts), current.id);
-  });
+  const control = running.get(thread.id);
+  if (!control || control.cancelled) return null;
+  if (opts.stepRef) {
+    const plan = getPlan(opts.stepRef.planId);
+    if (!plan || ['cancelled','superseded','paused'].includes(plan.status)) return null;
+    patchStep(opts.stepRef.planId, opts.stepRef.stepId, { assignee: tool });
+  }
+  const msg = addMessage(thread.id, { role: 'agent', tool, round: opts.round ?? null, status: 'running' });
+  const state = { content: '', activity: [], files: [], phase: 'queued' };
+  live.set(msg.id, state);
+  emit(thread.id, 'phase', { id: msg.id, phase: 'queued' });
+  try {
+    // Session -> workspace -> process capacity. Never reserve a process while waiting on a lock.
+    const reply = await withAgentTurn(thread.id, tool, () => {
+      const current = getThread(thread.id);
+      const currentOpts = { ...opts, queuedTurn: { msg, state } };
+      if (current.settings.permission === 'read') currentOpts.permission = 'read';
+      const permission = currentOpts.permission || current.settings.permission;
+      if (permission === 'read') return runAgentUnlocked(current, tool, currentOpts);
+      return withWorkspaceWriter(current.cwd, () => runAgentUnlocked(current, tool, currentOpts), current.id);
+    });
+    if (reply) return reply;
+    if (!getDb().prepare('SELECT id FROM thread_messages WHERE id=?').get(msg.id)) { live.delete(msg.id); return null; }
+    denyForMessage(msg.id);
+    return finishMessage(msg, { content: state.content, activity: state.activity, status: 'stopped', error: 'Stopped' });
+  } catch (error) {
+    if (!getDb().prepare('SELECT id FROM thread_messages WHERE id=?').get(msg.id)) { live.delete(msg.id); return null; }
+    denyForMessage(msg.id);
+    return finishMessage(msg, { content: state.content, activity: state.activity, status: control.cancelled ? 'stopped' : 'error', error: control.cancelled ? 'Stopped' : (error?.message || String(error)) });
+  }
 }
 
-async function runAgentUnlocked(thread, tool, { instruction, round = null, permission, modelOverride, stepRef } = {}) {
+async function runAgentUnlocked(thread, tool, { instruction, round = null, permission, modelOverride, stepRef, contextSnapshot, queuedTurn } = {}) {
   const c = running.get(thread.id);
   if (!c || c.cancelled) return null;
   // A fallback can ask the user before its reply finishes. Publish its task
@@ -383,8 +480,8 @@ async function runAgentUnlocked(thread, tool, { instruction, round = null, permi
     if (!plan || ['cancelled', 'superseded', 'paused'].includes(plan.status)) return null;
     patchStep(stepRef.planId, stepRef.stepId, { assignee: tool });
   }
-  const msg = addMessage(thread.id, { role: 'agent', tool, round, status: 'running' });
-  const state = { content: '', activity: [], files: [] };
+  const msg = queuedTurn.msg;
+  const state = queuedTurn.state;
   live.set(msg.id, state);
   try {
     const currentAccess = getThread(thread.id).settings.permission;
@@ -397,38 +494,45 @@ async function runAgentUnlocked(thread, tool, { instruction, round = null, permi
       denyForMessage(msg.id);
       return finishMessage(msg, { content: state.content, activity: state.activity, status: 'stopped', error: 'Stopped', files: state.files, usage: {} });
     }
-    let attempt = buildPrompt(thread, tool, instruction);
+    let attempt = buildPrompt(thread, tool, instruction, contextSnapshot);
     const isWaiting = () =>
       listApprovals(thread.id).some(a => a.messageId === msg.id) ||
       listQuestions(thread.id).some(q => q.message_id === msg.id && q.via === 'tool');
-    const exec = (p, nativeId) => {
-      if (c.cancelled) return Promise.resolve({ text: '', sessionId: null, error: 'Stopped', files: [], usage: {} });
-      const h = runTurn(tool, {
-        cwd: thread.cwd, prompt: p, nativeId, permission: perm,
-        images: tool === 'codex' ? messageImages(getThread(thread.id).messages.filter(m => m.role === 'user').at(-1)?.content, thread.cwd) : [],
-        shell: thread.settings.shell, stallMin: thread.settings.stallMin, isWaiting,
-        model: modelOverride || thread.settings.models?.[tool], effort: thread.settings.efforts?.[tool], timeoutMin: thread.settings.timeoutMin,
-        env: { ...environmentFor(tool), AGENT_HUB_DB: DB_PATH, AGENT_HUB_DATA_DIR: DATA_DIR, CONCLAVE_THREAD: thread.id, CONCLAVE_MESSAGE: msg.id, CONCLAVE_AGENT: tool, CONCLAVE_PLAN: stepRef?.planId || '', CONCLAVE_STEP: stepRef?.stepId || '' },
-      }, e => {
-        if (e.type === 'delta') { state.content += e.text; emit(thread.id, 'delta', { id: msg.id, text: e.text }); }
-        else if (e.type === 'activity') { state.activity.push(e.text); emit(thread.id, 'activity', { id: msg.id, text: e.text }); }
-        else if (e.type === 'session' && e.id) saveSession(thread.id, tool, e.id, 0);
-        else if (e.type === 'phase') { if (state.phase !== e.phase) { state.phase = e.phase; emit(thread.id, 'phase', { id: msg.id, phase: e.phase }); } }
-        else if (e.type === 'file') {
-          if (!state.files.some(f => f.path.toLowerCase() === e.path.toLowerCase())) state.files.push({ path: e.path, action: e.action });
-          emit(thread.id, 'file', { id: msg.id, path: e.path, action: e.action });
-        }
+    const exec = async (p, nativeId) => {
+      const stopped = () => ({ text: state.content, sessionId: null, error: 'Stopped', files: state.files, usage: {} });
+      const result = await withAgentProcess(thread.id, async () => {
+        if (c.cancelled) return stopped();
+        const accessNow = getThread(thread.id).settings.permission;
+        state.phase = 'starting';
+        emit(thread.id, 'phase', { id: msg.id, phase: 'starting' });
+        const h = runTurn(tool, {
+          cwd: thread.cwd, prompt: p, nativeId, permission: accessNow === 'read' ? 'read' : perm,
+          images: tool === 'codex' ? messageImages((contextSnapshot?.messages || getThread(thread.id).messages).filter(m => m.role === 'user').at(-1)?.content, thread.cwd) : [],
+          shell: thread.settings.shell, stallMin: thread.settings.stallMin, isWaiting,
+          model: modelOverride || thread.settings.models?.[tool], effort: thread.settings.efforts?.[tool], timeoutMin: thread.settings.timeoutMin,
+          env: { ...environmentFor(tool), AGENT_HUB_DB: DB_PATH, AGENT_HUB_DATA_DIR: DATA_DIR, CONCLAVE_THREAD: thread.id, CONCLAVE_MESSAGE: msg.id, CONCLAVE_AGENT: tool, CONCLAVE_PLAN: stepRef?.planId || '', CONCLAVE_STEP: stepRef?.stepId || '' },
+        }, e => {
+          if (e.type === 'delta') { state.content += e.text; emit(thread.id, 'delta', { id: msg.id, text: e.text }); }
+          else if (e.type === 'activity') { state.activity.push(e.text); emit(thread.id, 'activity', { id: msg.id, text: e.text }); }
+          else if (e.type === 'session' && e.id) saveSession(thread.id, tool, e.id, 0);
+          else if (e.type === 'phase') { if (state.phase !== e.phase) { state.phase = e.phase; emit(thread.id, 'phase', { id: msg.id, phase: e.phase }); } }
+          else if (e.type === 'file') {
+            if (!state.files.some(f => f.path.toLowerCase() === e.path.toLowerCase())) state.files.push({ path: e.path, action: e.action });
+            emit(thread.id, 'file', { id: msg.id, path: e.path, action: e.action });
+          }
+        });
+        c.handles.add(h);
+        if (c.cancelled) h.stop();
+        return h.promise.finally(() => c.handles.delete(h));
       });
-      c.handles.add(h);
-      if (c.cancelled) h.stop();
-      return h.promise.finally(() => c.handles.delete(h));
+      return result || stopped();
     };
     let r = await exec(attempt.prompt, attempt.nativeId);
     // A resumed session can disappear (deleted, or made by another app). Start fresh once.
     if (r.error && !r.text && attempt.nativeId && !c.cancelled && r.error !== 'Stopped') {
       getDb().prepare('UPDATE thread_sessions SET native_id = NULL WHERE thread_id = ? AND tool = ?').run(thread.id, tool);
       state.content = ''; state.activity.push('(could not resume the earlier session; starting a fresh one with the chat history)');
-      attempt = buildPrompt(thread, tool, instruction);
+      attempt = buildPrompt(thread, tool, instruction, contextSnapshot);
       r = await exec(attempt.prompt, null);
     }
     if (r.sessionId) saveSession(thread.id, tool, r.sessionId, attempt.maxSeq);
@@ -560,19 +664,53 @@ function routeUserMessage(text, thread) {
   return thread.target === 'council' ? { council: true } : { tools: thread.settings.responders?.includes(thread.target) ? [...new Set(thread.settings.responders)] : [thread.target] };
 }
 
+function startingContext(thread) {
+  return { messages: getDb().prepare("SELECT * FROM thread_messages WHERE thread_id=? AND status!='running' ORDER BY seq").all(thread.id), teamStatus: teamStatus(thread) };
+}
 async function runDirect(thread, tools) {
-  const queue = tools.map(t => ({ tool: t, round: null }));
-  let hops = 0;
-  while (queue.length && !isCancelled(thread.id)) {
-    const { tool, round } = queue.shift();
-    const reply = await runAgent(thread, tool, { round });
-    if (reply?.status === 'done') questionFromBlock(thread, reply, {});
-    if (!reply || reply.status !== 'done' || !thread.settings.autoRelay) continue;
-    for (const next of mentionsIn(reply.content, tool, memberIds())) {
-      if (hops >= MAX_RELAY_HOPS) { addMessage(thread.id, { role: 'system', content: `Stopped automatic hand-offs after ${MAX_RELAY_HOPS} hops. Reply to continue.` }); queue.length = 0; break; }
-      hops++;
-      queue.push({ tool: next, round: 'relay' });
+  const initial = [...new Set(tools)];
+  const contextSnapshot = startingContext(thread);
+  // Drain the entire initial batch, even if one dispatch fails, before ordered handoffs.
+  const results = await Promise.allSettled(initial.map(async tool => {
+    const reply = await runAgent(thread, tool, { contextSnapshot, exclude: initial.length > 1 ? initial : undefined });
+    if (reply?.status === 'done' && !isCancelled(thread.id)) questionFromBlock(thread, reply, {});
+    return reply;
+  }));
+  const queue = [], pairs = new Set(), pendingTargets = new Set();
+  let hops = 0, warned = false;
+  const accept = (reply, requestedTool, readQuestion = true) => {
+    if (readQuestion && reply?.status === 'done') questionFromBlock(thread, reply, {});
+    if (!reply || reply.status !== 'done' || !thread.settings.autoRelay) return;
+    const source = reply.tool || requestedTool;
+    for (const target of mentionsIn(reply.content, source, memberIds())) {
+      const pair = `${source}:${target}`;
+      if (pairs.has(pair)) continue;
+      pairs.add(pair);
+      if (pendingTargets.has(target)) continue;
+      if (hops >= MAX_RELAY_HOPS) {
+        if (!warned) addMessage(thread.id, { role: 'system', content: `Stopped automatic hand-offs after ${MAX_RELAY_HOPS} hops. Reply to continue.` });
+        warned = true; continue;
+      }
+      pendingTargets.add(target); hops++; queue.push(target);
     }
+  };
+  for (let i=0; i<results.length && !isCancelled(thread.id); i++) {
+    const result = results[i];
+    if (result.status === 'fulfilled') accept(result.value, initial[i], false);
+    else addMessage(thread.id, { role: 'system', content: `${member(initial[i]).label} could not complete its turn.` });
+  }
+  if (initial.length > 1 && !isCancelled(thread.id) && results.every(r => r.status === 'fulfilled' && !r.value)) {
+    const fallback = fb(thread);
+    const order = [...new Set([...initial, ...fallback.order.filter(t => memberIds().includes(t))])];
+    if (fallback.enabled && fallback.waitForReset && order.length && order.every(t => !!outOfCredits(t))) {
+      const soonest = Math.min(...order.map(t => outOfCredits(t).until));
+      kvSet(`waiting:${thread.id}`, { until: soonest + 60_000, tool: initial[0], round: null });
+      addMessage(thread.id, { role: 'system', content: `All agents are out of credits. I'll continue automatically at ${fmtTime(soonest + 60_000)}. You can also retry now or cancel.` });
+    }
+  }
+  while (queue.length && !isCancelled(thread.id)) {
+    const tool = queue.shift(); pendingTargets.delete(tool);
+    accept(await runAgent(thread, tool, { round: 'relay' }), tool);
   }
 }
 
@@ -597,16 +735,18 @@ async function runCouncil(thread) {
   // which reports it once and waits for the earliest reset.
   if (!members.length) return runAgent(thread, leadOf(thread, all), { permission: perm });
   const names = members.map(t => member(t).label).join(', ');
+  const initialContext = startingContext(thread);
   await Promise.all(members.map(t => runAgent(thread, t, {
-    round: 'council-1', permission: perm, exclude: all,
+    contextSnapshot: initialContext, round: 'council-1', permission: perm, exclude: all,
     instruction: `COUNCIL ROUND 1 (members: ${names}). Give your own independent answer to the user's latest request. You may inspect files, but do not change anything yet. Be specific and concise; the other members will review your answer.`,
   })));
   for (let r = 2; r <= 1 + Number(thread.settings.rounds || 0); r++) {
     if (c.cancelled) return;
     const live = members.filter(t => !outOfCredits(t));   // someone may have run out in an earlier round
     if (!live.length) break;
+    const roundContext = startingContext(thread);
     await Promise.all(live.map(t => runAgent(thread, t, {
-      round: `council-${r}`, permission: perm, exclude: all,
+      contextSnapshot: roundContext, round: `council-${r}`, permission: perm, exclude: all,
       instruction: `COUNCIL ROUND ${r}. Read the other members' latest answers above. Say where you agree, point out mistakes or risks in their answers (or your own), then give your improved answer. Keep it short; do not repeat what everyone already agrees on.`,
     })));
   }
@@ -750,6 +890,7 @@ async function jobDone(threadId, finishedCtrl = null) {
   }
   cleanupRunningMessages(threadId, !!(targetCtrl?.cancelled || targetCtrl?.userStopped));
   running.delete(threadId);
+  invalidateLimitsCache(); // a finished run can change plan usage
   if (targetCtrl?.executionClaim && lockProvider) {
     try { await lockProvider.syncThread?.(threadId); } catch {}
     try { await lockProvider.releaseLock(threadId, targetCtrl.executionClaim, targetCtrl.cancelled ? 'stopped' : 'done'); }

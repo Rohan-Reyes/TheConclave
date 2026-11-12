@@ -3,6 +3,9 @@ import { mountGlobals } from './src/config/globals.js';
 import { readTaskUpdates } from './src/context-updates.js';
 import { mountAssistant } from './src/unified-assistant.js';
 import path from 'node:path';
+import fs from 'node:fs';
+import zlib from 'node:zlib';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { ROOT } from './src/paths.js';
 import { getDb, ftsQuery } from './src/db.js';
 import { runIndex, loadTranscript, indexState } from './src/indexer.js';
@@ -43,6 +46,58 @@ let revokeAssistantSession = () => {};
 const auth = mountAuth(app, { root: ROOT, onSessionRevoked: id => revokeAssistantSession(id) });
 revokeAssistantSession = mountAssistant(app, { authenticated: auth.enabled });
 app.use(express.json({ limit: '6mb' }));
+// Gzip JSON responses over 2 KB when the client accepts it. Event streams never pass through res.json.
+// Honors quality values: "gzip;q=0" (or "*;q=0" without an explicit gzip entry) means no gzip.
+function acceptsGzip(req) {
+  let gzip = null, star = null;
+  for (const part of String(req.headers['accept-encoding'] || '').split(',')) {
+    const [name, ...params] = part.trim().toLowerCase().split(';');
+    const qp = params.map(x => x.trim()).find(x => x.startsWith('q='));
+    const q = qp ? Number(qp.slice(2)) : 1;
+    if (name === 'gzip' || name === 'x-gzip') gzip = Math.max(gzip ?? 0, Number.isFinite(q) ? q : 0);
+    else if (name === '*') star = Number.isFinite(q) ? q : 0;
+  }
+  return (gzip ?? star ?? 0) > 0;
+}
+app.use('/api', (req, res, next) => {
+  if (!acceptsGzip(req)) return next();
+  const json = res.json.bind(res);
+  res.json = body => {
+    const text = JSON.stringify(body);
+    if (text === undefined || Buffer.byteLength(text) < 2048 || res.headersSent) return json(body);
+    zlib.gzip(text, { level: 6 }, (err, gz) => {
+      if (res.headersSent) return;
+      if (err) return json(body);
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Encoding', 'gzip'); res.setHeader('Vary', 'Accept-Encoding');
+      res.end(gz);
+    });
+    return res;
+  };
+  next();
+});
+// Precompressed static text assets (cached per file mtime); falls through to express.static otherwise.
+const gzCache = new Map();
+app.get(/\.(?:js|css|html|svg|json|webmanifest)$/, (req, res, next) => {
+  if (!acceptsGzip(req) || req.path.startsWith('/api/')) return next();
+  const file = path.join(ROOT, 'public', path.normalize(req.path).replace(/^([/\\])+/, ''));
+  if (!file.startsWith(path.join(ROOT, 'public') + path.sep)) return next();
+  fs.stat(file, (err, st) => {
+    if (err || !st.isFile() || st.size < 1024) return next();
+    const hit = gzCache.get(file);
+    const send = gz => {
+      res.type(path.extname(file)); res.setHeader('Content-Encoding', 'gzip'); res.setHeader('Vary', 'Accept-Encoding');
+      res.setHeader('Last-Modified', st.mtime.toUTCString()); res.setHeader('Cache-Control', 'no-cache');
+      if (req.headers['if-modified-since'] && new Date(req.headers['if-modified-since']) >= new Date(st.mtime.toUTCString())) return res.status(304).end();
+      res.end(gz);
+    };
+    if (hit && hit.mtime === st.mtimeMs) return send(hit.gz);
+    fs.readFile(file, (e2, raw) => {
+      if (e2) return next();
+      zlib.gzip(raw, { level: 9 }, (e3, gz) => { if (e3) return next(); gzCache.set(file, { mtime: st.mtimeMs, gz }); send(gz); });
+    });
+  });
+});
 app.use(express.static(path.join(ROOT, 'public')));
 
 const wrap = fn => (req, res) => Promise.resolve().then(() => fn(req, res)).then(
@@ -167,7 +222,18 @@ app.get('/api/threads', wrap(() => threads.listThreads()));
 app.post('/api/threads', wrap(req => threads.createThread(req.body)));
 app.post('/api/threads/:id/context/read', wrap(req => {const updates=readTaskUpdates(req.params.id, req.body.tool);threads.notifyContextRead(req.params.id);return updates;}));
 app.post('/api/threads/:id/queue/:qid/details', wrap(req => threads.sendQueuedDetails(req.params.id,req.params.qid)));
-app.get('/api/threads/:id', wrap(req => threads.getThread(req.params.id)));
+app.get('/api/threads/:id', wrap(req => {
+  const q = req.query, opts = {};
+  if (q.limit !== undefined) opts.limit = q.limit;
+  if (q.before !== undefined) opts.before = q.before;
+  if (q.activity === 'lazy') opts.activity = 'lazy';
+  return threads.getThread(req.params.id, opts);
+}));
+app.get('/api/threads/:id/messages', wrap(req => {
+  const { before, after, limit, activity } = req.query;
+  return threads.getMessages(req.params.id, { before, after, limit, activity: activity === 'lazy' ? 'lazy' : 'full' });
+}));
+app.get('/api/threads/:id/messages/:mid/activity', wrap(req => threads.getMessageActivity(req.params.id, req.params.mid)));
 app.patch('/api/threads/:id', wrap(req => threads.updateThread(req.params.id, req.body)));
 app.delete('/api/threads/:id', wrap(req => { threads.deleteThread(req.params.id); return { ok: true }; }));
 app.post('/api/threads/:id/messages', wrap(req => threads.sendMessage(req.params.id, req.body.text, { executePlan: !!req.body.executePlan, mode: req.body.mode, requestId: req.body.requestId })));
@@ -201,10 +267,17 @@ app.get('/api/search', wrap(req => {
 }));
 app.post('/api/chats/:id/continue', wrap(req => threads.threadFromChat(chatOr404(req.params.id))));
 app.get('/api/threads/:id/events', (req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-  res.write(': connected\n\n');
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  req.socket.setNoDelay?.(true);
+  // retry: tells EventSource to reconnect after 3 s; hello carries the latest seq so a reconnecting
+  // client can fetch only what it missed (GET /api/threads/:id/messages?after=<seq>).
+  // Subscribe before reading the cursor: anything emitted from here on is either streamed live or
+  // already counted in lastSeq (clients upsert by message id, so overlap is harmless; gaps are not).
+  res.write('retry: 3000\n: connected\n\n');
   const off = threads.onThreadEvent(req.params.id, e => res.write(`data: ${JSON.stringify(e)}\n\n`));
-  const ping = setInterval(() => res.write(': ping\n\n'), 20_000);
+  let lastSeq = 0; try { lastSeq = threads.lastMessageSeq(req.params.id); } catch {}
+  res.write(`data: ${JSON.stringify({ type: 'hello', lastSeq, at: Date.now() })}\n\n`);
+  const ping = setInterval(() => res.write(': ping\n\n'), 15_000);
   req.on('close', () => { off(); clearInterval(ping); });
 });
 
@@ -216,6 +289,26 @@ syncService.markDeviceInterrupted().catch(() => {});
 const server = app.listen(PORT, HOST, () => {
   console.log(`Conclave running at http://${HOST}:${PORT}`);
   runIndex().then(s => console.log(`Indexed: ${s.changed} changed in ${s.lastDurationMs} ms${s.errors.length ? `, ${s.errors.length} errors` : ''}`));
-  setInterval(() => runIndex().catch(() => {}), 30_000);
+  // Background indexing re-parses changed CLI transcripts. While agents are working their transcripts
+  // change constantly, so defer until idle, but never let the index go more than 3 minutes stale.
+  let lastIndexAt = Date.now();
+  setInterval(() => {
+    const busy = threads.activeJobCount() > 0;
+    if (busy && Date.now() - lastIndexAt < 180_000) { indexState.deferred = (indexState.deferred || 0) + 1; return; }
+    lastIndexAt = Date.now();
+    runIndex().then(s => { if (s.lastDurationMs > 1500) console.log(`Index pass took ${s.lastDurationMs} ms (${s.changed} changed)`); }).catch(() => {});
+  }, 30_000);
 });
+
+// Event-loop delay diagnostics: log a summary when the loop stalls (stalls freeze live streams).
+const loopDelay = monitorEventLoopDelay({ resolution: 20 });
+loopDelay.enable();
+export const loopStats = { maxMs: 0, p99Ms: 0, meanMs: 0, stalls: 0, since: new Date().toISOString() };
+setInterval(() => {
+  const maxMs = Math.round(loopDelay.max / 1e6), p99Ms = Math.round(loopDelay.percentile(99) / 1e6);
+  Object.assign(loopStats, { maxMs, p99Ms, meanMs: Math.round(loopDelay.mean / 1e6), at: new Date().toISOString() });
+  if (maxMs > 200) { loopStats.stalls++; console.log(`Event loop stall: max ${maxMs} ms, p99 ${p99Ms} ms over the last minute (active jobs: ${threads.activeJobCount()})`); }
+  loopDelay.reset();
+}, 60_000).unref();
+app.get('/api/health', (req, res) => res.json({ loop: loopStats, index: { lastRun: indexState.lastRun, lastDurationMs: indexState.lastDurationMs, deferred: indexState.deferred || 0 }, activeJobs: threads.activeJobCount() }));
 attachTerminalWs(server, terminalService);

@@ -40,46 +40,53 @@
   </header>
 
   <aside class="sidebar" id="sidebar" aria-label="Main navigation">
-    <div class="sidebar-head">
-      <a class="brand" href="#/" aria-label="Conclave home">
-        <span class="dots" aria-hidden="true"><i class="t-claude"></i><i class="t-antigravity"></i><i class="t-codex"></i></span>
-        <span class="brand-name">Conclave</span>
-        <span class="version-badge">v2.0.0</span>
-      </a>
-      <button class="icon-btn ghost" id="collapse-sidebar" title="Collapse sidebar" aria-label="Collapse sidebar"><svg class="ic"><use href="#i-panel"/></svg></button>
+    <div class="sidebar-top">
+      <div class="sidebar-head">
+        <a class="brand" href="#/" aria-label="Conclave home">
+          <span class="dots" aria-hidden="true"><i class="t-claude"></i><i class="t-antigravity"></i><i class="t-codex"></i></span>
+          <span class="brand-name">Conclave</span>
+          <span class="version-badge">v2.0.0</span>
+        </a>
+        <button class="icon-btn ghost" id="collapse-sidebar" title="Collapse sidebar" aria-label="Collapse sidebar"><svg class="ic"><use href="#i-panel"/></svg></button>
+      </div>
+      <a class="new-chat-btn" href="#/hub?new=1"><svg class="ic"><use href="#i-plus"/></svg><span>New chat</span></a>
+      <a class="jarvis-pill" href="#/management"><span class="jarvis-dot" aria-hidden="true"></span><span>Ask Jarvis</span></a>
+      <button class="search-btn" id="open-search" title="Search everything (Ctrl+K)">
+        <svg class="ic"><use href="#i-search"/></svg><span>Search</span><kbd>Ctrl K</kbd>
+      </button>
     </div>
-    <a class="new-chat-btn" href="#/hub?new=1"><svg class="ic"><use href="#i-plus"/></svg><span>New chat</span></a>
-    <a class="jarvis-pill" href="#/management"><span class="jarvis-dot" aria-hidden="true"></span><span>Ask Jarvis</span></a>
-    <button class="search-btn" id="open-search" title="Search everything (Ctrl+K)">
-      <svg class="ic"><use href="#i-search"/></svg><span>Search</span><kbd>Ctrl K</kbd>
-    </button>
-    <nav class="nav-groups">
-      <a href="#/" data-nav="home" data-title="Overview"><svg class="ic"><use href="#i-home"/></svg><span>Overview</span></a>
-      <div class="nav-label">Work</div>
-      <a href="#/hub" data-nav="hub" data-title="Chats"><svg class="ic"><use href="#i-chat"/></svg><span>Chats</span></a>
-      <a href="#/projects" data-nav="projects" data-title="Projects"><svg class="ic"><use href="#i-folder"/></svg><span>Projects</span></a>
-      <a href="#/files" data-nav="files" data-title="Files"><svg class="ic"><use href="#i-file"/></svg><span>Files</span></a>
-      <a href="#/terminal" data-nav="terminal" data-title="Terminal"><svg class="ic"><use href="#i-terminal"/></svg><span>Terminal</span></a>
-      <div class="nav-label">Library</div>
-      <a href="#/chats" data-nav="chats" data-title="History"><svg class="ic"><use href="#i-folder"/></svg><span>History</span></a>
-      <div class="nav-label">Jarvis</div>
-      <a href="#/management" data-nav="management" data-title="Management"><svg class="ic"><use href="#i-chat"/></svg><span>Management</span></a>
-      <a href="#/today" data-nav="today" data-title="Today"><svg class="ic"><use href="#i-home"/></svg><span>Today</span></a>
-      <a href="#/assistant-inbox" data-nav="inbox" data-title="Inbox"><svg class="ic"><use href="#i-list"/></svg><span>Inbox</span></a>
-      <a href="#/automations" data-nav="automations" data-title="Tasks &amp; automations"><svg class="ic"><use href="#i-chart"/></svg><span>Tasks &amp; automations</span></a>
-      <a href="#/assistant-notes" data-nav="notes" data-title="Notes"><svg class="ic"><use href="#i-file"/></svg><span>Notes</span></a>
-      <a href="#/mind" data-nav="mind" data-title="3D Memory"><svg class="ic"><use href="#i-brain"/></svg><span>3D Memory</span></a>
-      <a href="#/connectors" data-nav="connectors" data-title="Connectors"><svg class="ic"><use href="#i-sliders"/></svg><span>Connectors</span></a>
-      <a href="#/telegram" data-nav="telegram" data-title="Telegram"><svg class="ic"><use href="#i-chat"/></svg><span>Telegram</span></a>
-      <div class="nav-label">Coding</div>
-      <a href="#/memory" data-nav="memory" data-title="Memory"><svg class="ic"><use href="#i-brain"/></svg><span>Memory</span></a>
-      <div class="nav-label">System</div>
-      <a href="#/usage" data-nav="usage" data-title="Usage"><svg class="ic"><use href="#i-chart"/></svg><span>Usage</span></a>
-      <a href="#/config" data-nav="config" data-title="Agents & tools"><svg class="ic"><use href="#i-sliders"/></svg><span>Agents &amp; tools</span></a>
-      <a href="#/settings" data-nav="settings" data-title="Settings"><svg class="ic"><use href="#i-gear"/></svg><span>Settings</span></a>
-    </nav>
-    <div class="nav-label recent-label">Recent</div>
-    <div class="recent-list" id="recent-chats" aria-label="Recent chats"></div>
+    <div class="sidebar-mid" id="sidebar-mid">
+      <nav class="nav-groups">
+        <a href="#/" data-nav="home" data-title="Overview"><svg class="ic"><use href="#i-home"/></svg><span>Overview</span></a>
+        <div class="nav-label">Work</div>
+        <a href="#/hub" data-nav="hub" data-title="Chats"><svg class="ic"><use href="#i-chat"/></svg><span>Chats</span></a>
+        <a href="#/projects" data-nav="projects" data-title="Projects"><svg class="ic"><use href="#i-folder"/></svg><span>Projects</span></a>
+        <a href="#/files" data-nav="files" data-title="Files"><svg class="ic"><use href="#i-file"/></svg><span>Files</span></a>
+        <a href="#/terminal" data-nav="terminal" data-title="Terminal"><svg class="ic"><use href="#i-terminal"/></svg><span>Terminal</span></a>
+        <div class="nav-label">Library</div>
+        <a href="#/chats" data-nav="chats" data-title="History"><svg class="ic"><use href="#i-folder"/></svg><span>History</span></a>
+        <div class="nav-label">Jarvis</div>
+        <a href="#/management" data-nav="management" data-title="Management"><svg class="ic"><use href="#i-chat"/></svg><span>Management</span></a>
+        <a href="#/today" data-nav="today" data-title="Today"><svg class="ic"><use href="#i-home"/></svg><span>Today</span></a>
+        <a href="#/assistant-inbox" data-nav="inbox" data-title="Inbox"><svg class="ic"><use href="#i-list"/></svg><span>Inbox</span></a>
+        <a href="#/automations" data-nav="automations" data-title="Tasks &amp; automations"><svg class="ic"><use href="#i-chart"/></svg><span>Tasks &amp; automations</span></a>
+        <a href="#/assistant-notes" data-nav="notes" data-title="Notes"><svg class="ic"><use href="#i-file"/></svg><span>Notes</span></a>
+        <a href="#/mind" data-nav="mind" data-title="3D Memory"><svg class="ic"><use href="#i-brain"/></svg><span>3D Memory</span></a>
+        <a href="#/connectors" data-nav="connectors" data-title="Connectors"><svg class="ic"><use href="#i-sliders"/></svg><span>Connectors</span></a>
+        <a href="#/telegram" data-nav="telegram" data-title="Telegram"><svg class="ic"><use href="#i-chat"/></svg><span>Telegram</span></a>
+        <div class="nav-label">Coding</div>
+        <a href="#/memory" data-nav="memory" data-title="Memory"><svg class="ic"><use href="#i-brain"/></svg><span>Memory</span></a>
+        <div class="nav-label">System</div>
+        <a href="#/usage" data-nav="usage" data-title="Usage"><svg class="ic"><use href="#i-chart"/></svg><span>Usage</span></a>
+        <a href="#/config" data-nav="config" data-title="Agents & tools"><svg class="ic"><use href="#i-sliders"/></svg><span>Agents &amp; tools</span></a>
+        <a href="#/settings" data-nav="settings" data-title="Settings"><svg class="ic"><use href="#i-gear"/></svg><span>Settings</span></a>
+      </nav>
+      <div class="nav-label recent-label">Recent</div>
+      <div class="recent-list" id="recent-chats" aria-label="Recent chats"></div>
+      <div class="recent-more">
+        <a href="#/chats" class="recent-all-link" data-nav="chats" title="View all chats in History"><span>See all chats →</span></a>
+      </div>
+    </div>
     <div class="sidebar-foot">
       <div id="index-state" class="index-state"></div>
       <button class="account-btn" id="account-btn" aria-haspopup="menu" aria-expanded="false">

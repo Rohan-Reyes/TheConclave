@@ -112,6 +112,8 @@ export function runIndex() {
     for (const [tool, a] of Object.entries(adapters)) {
       for (const item of a.discover()) {
         seen.add(item.path);
+        // Yield between files so live streams and requests are served during long passes.
+        await new Promise(r => setImmediate(r));
         try { if (await indexFile(tool, item, known.get(item.path))) changed++; }
         catch (e) { errors.push(`${tool} ${item.path}: ${e.message}`); }
       }

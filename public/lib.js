@@ -1,23 +1,81 @@
 export const $ = (s, root = typeof document !== 'undefined' ? document : null) => root?.querySelector(s);
 export const $$ = (s, root = typeof document !== 'undefined' ? document : null) => root ? [...root.querySelectorAll(s)] : [];
 
-export async function api(url, { method = 'GET', body } = {}) {
-  const isMutation = ['POST', 'PUT', 'PATCH'].includes(String(method).toUpperCase());
+const inflight = new Map();
+const apiCache = new Map();
+let cacheGeneration = 0;
+const clone = value => structuredClone(value);
+const aborted = () => new DOMException('Aborted', 'AbortError');
+
+export function clearApiCache(prefix = '') {
+  cacheGeneration++;
+  for (const key of apiCache.keys()) {
+    if (key.startsWith(prefix)) apiCache.delete(key);
+  }
+}
+
+export async function api(url, { method = 'GET', body, signal, cache: cacheTtl = 0 } = {}) {
+  if (signal?.aborted) throw aborted();
+  const verb = String(method).toUpperCase();
+  const isMutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(verb);
+  if (isMutation) clearApiCache();
   const headers = {};
-  let bodyPayload = undefined;
+  let payload;
   if (isMutation || body !== undefined) {
     headers['Content-Type'] = 'application/json';
-    bodyPayload = JSON.stringify(body !== undefined ? body : {});
+    payload = JSON.stringify(body ?? {});
   }
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: bodyPayload,
+  const fetchData = async fetchSignal => {
+    const res = await fetch(url, { method: verb, headers, body: payload, signal: fetchSignal });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401 && typeof window !== 'undefined' && !url.startsWith('/api/auth/')) {
+      window.location.replace('/login');
+    }
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  };
+  if (verb !== 'GET') return fetchData(signal);
+  const hit = apiCache.get(url);
+  if (cacheTtl > 0 && hit && Date.now() - hit.timestamp < cacheTtl) return clone(hit.data);
+
+  let entry = inflight.get(url);
+  if (!entry || entry.controller.signal.aborted || entry.generation !== cacheGeneration) {
+    entry = { controller: new AbortController(), generation: cacheGeneration, clients: new Set(), cacheTtl };
+    inflight.set(url, entry);
+    const request = entry;
+    request.promise = fetchData(request.controller.signal).then(data => {
+      if (!request.controller.signal.aborted && request.generation === cacheGeneration &&
+          (request.cacheTtl > 0 || apiCache.has(url))) {
+        apiCache.delete(url);
+        apiCache.set(url, { timestamp: Date.now(), data: clone(data) });
+        while (apiCache.size > 128) apiCache.delete(apiCache.keys().next().value);
+      }
+      return data;
+    }).finally(() => {
+      if (inflight.get(url) === request) inflight.delete(url);
+    });
+  }
+  entry.cacheTtl = Math.max(entry.cacheTtl, cacheTtl);
+  const request = entry;
+  return new Promise((resolve, reject) => {
+    const client = {};
+    request.clients.add(client);
+    const detach = () => {
+      signal?.removeEventListener('abort', onAbort);
+      request.clients.delete(client);
+    };
+    const onAbort = () => {
+      detach();
+      if (!request.clients.size) request.controller.abort();
+      reject(aborted());
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    request.promise.then(data => {
+      detach();
+      if (signal?.aborted) reject(aborted());
+      else resolve(clone(data));
+    }, error => { detach(); reject(error); });
   });
-  const data = await res.json().catch(() => ({}));
-  if (res.status === 401 && typeof window !== 'undefined' && !url.startsWith('/api/auth/')) window.location.replace('/login');
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data;
 }
 
 export function esc(s) {

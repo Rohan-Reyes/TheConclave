@@ -165,3 +165,64 @@ class SpeechTextTests(unittest.TestCase):
         clean=spoken_text(text);chunks=speech_chunks(text)
         self.assertTrue(all(len(c)<=220 for c in chunks));self.assertEqual(' '.join(chunks),clean)
         self.assertNotIn('**',clean)
+
+class VoiceRefinementTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.metrics=[]
+        self.calls=types.SimpleNamespace(play=AsyncMock(),mute=AsyncMock(),unmute=AsyncMock())
+        self.audio=CallAudio(self.calls,123,{},asyncio.Lock(),AsyncMock(),metric=lambda name,detail:self.metrics.append({'name':name,**detail}))
+        self.fake_types=types.SimpleNamespace(MediaStream=lambda p:p,ExternalMedia=types.SimpleNamespace(AUDIO='external'))
+        self.patch=patch.dict(sys.modules,{'pytgcalls.types':self.fake_types});self.patch.start()
+    async def asyncTearDown(self):
+        await self.audio.close();self.patch.stop()
+    async def test_quiet_asr_partial_finalizes_and_reports_levels_without_transcript(self):
+        from array import array
+        class Recognizer:
+            def __init__(self,*args):pass
+            def AcceptWaveform(self,data):return False
+            def PartialResult(self):return '{"partial":"private quiet phrase"}'
+            def FinalResult(self):return '{"text":"private quiet phrase"}'
+        with patch.dict(sys.modules,{'vosk':types.SimpleNamespace(KaldiRecognizer=Recognizer)}):
+            task=asyncio.create_task(self.audio._recognize())
+            await self.audio.frames.put(array('h',[200]*3200).tobytes())
+            self.assertEqual(await asyncio.wait_for(self.audio.turns.get(),1.5),'private quiet phrase')
+            task.cancel();await asyncio.gather(task,return_exceptions=True)
+        window=next(m for m in self.metrics if m['name']=='recognition_window')
+        self.assertEqual(window['rms_mean'],200);self.assertEqual(window['threshold_rms'],450)
+        self.assertNotIn('private quiet phrase',str(self.metrics));self.assertTrue(all(len(m['call_id'])==32 for m in self.metrics))
+    async def test_hangup_releases_local_model_wait(self):
+        started=asyncio.Event();released=asyncio.Event()
+        async def pending(text):
+            started.set()
+            try:await asyncio.Event().wait()
+            finally:released.set()
+        self.audio.reply=pending
+        task=asyncio.create_task(self.audio._model_reply('owner request'))
+        await started.wait();self.audio.closed.set()
+        self.assertIsNone(await asyncio.wait_for(task,.5));self.assertTrue(released.is_set())
+        metric=next(m for m in self.metrics if m['name']=='model');self.assertEqual(metric['outcome'],'cancelled')
+    async def test_failed_stream_replacement_mutes_and_next_speech_unmutes(self):
+        self.audio.speaking=True;self.calls.play.side_effect=RuntimeError('native failure')
+        await self.audio.interrupt();self.calls.mute.assert_awaited_once_with(123);self.assertTrue(self.audio.output_muted)
+        self.audio.interrupted.clear()
+        async def save(text,path,voice):Path(path).write_bytes(b'fixture')
+        async def play(owner,path):self.audio.playback.set()
+        self.calls.play.side_effect=play
+        with patch('call_audio.synthesize',save):self.assertTrue(await self.audio.say('hello'))
+        self.calls.unmute.assert_awaited_once_with(123);self.assertFalse(self.audio.output_muted)
+        self.assertIn('fallback',[m.get('outcome') for m in self.metrics if m['name']=='interruption'])
+    async def test_synthesis_and_playback_metrics_do_not_contain_reply(self):
+        async def save(text,path,voice):Path(path).write_bytes(b'fixture')
+        async def play(owner,path):self.audio.playback.set()
+        self.calls.play.side_effect=play
+        with patch('call_audio.synthesize',save):await self.audio.say('private response words')
+        self.assertEqual({m['name'] for m in self.metrics},{'synthesis','playback'})
+        self.assertNotIn('private response',str(self.metrics));self.assertNotIn('/tmp',str(self.metrics))
+
+    async def test_recognizer_initialization_failure_is_reported_and_closes_wait(self):
+        states=[];self.audio.notify=lambda state,detail=None:states.append((state,detail))
+        with patch.dict(sys.modules,{'vosk':types.SimpleNamespace(KaldiRecognizer=lambda *args:(_ for _ in ()).throw(RuntimeError('private details')))}):
+            await self.audio._recognize()
+        self.assertTrue(self.audio.closed.is_set())
+        self.assertEqual(states[0],('error',{'stage':'recognition','error':'RuntimeError'}))
+        self.assertNotIn('private details',str(states))

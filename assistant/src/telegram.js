@@ -11,6 +11,19 @@ import { id, audit } from './db.js';
 import { getSecret, setSecret, modelReply } from './integrations.js';
 
 export const TELEGRAM_VOICES=['en-GB-RyanNeural','en-US-AndrewMultilingualNeural','en-US-AvaMultilingualNeural','fil-PH-AngeloNeural','fil-PH-BlessicaNeural'];
+const VOICE_METRIC_NAMES=new Set(['initialization','greeting','synthesis','playback','interruption','recognition_window','recognition_turn','model','call']);
+export function sanitizeVoiceMetric(input){
+  if(!input || typeof input!=='object' || !VOICE_METRIC_NAMES.has(input.name) || typeof input.call_id!=='string' || !/^[a-f0-9]{32}$/.test(input.call_id))return null;
+  const output={name:input.name,call_id:input.call_id};
+  const bounds={turn:10000,elapsed_ms:3600000,stream_ready_ms:3600000,rms_min:32768,rms_mean:32768,rms_max:32768,threshold_rms:32768,chunks:1000000,bytes:100000000,queue_depth:10000,dropped_frames:1000000,chars:2400,attempts:10};
+  for(const [field,max] of Object.entries(bounds))if(typeof input[field]==='number' && Number.isFinite(input[field]) && input[field]>=0 && input[field]<=max)output[field]=Math.round(input[field]*100)/100;
+  if(['ok','error','cancelled','timeout','closed','fallback'].includes(input.outcome))output.outcome=input.outcome;
+  if(typeof input.fallback==='boolean')output.fallback=input.fallback;
+  return output;
+}
+function voiceMetrics(db){
+  try{const values=JSON.parse(db.prepare("SELECT value FROM settings WHERE key='telegram:voice:metrics'").get()?.value || '[]');return Array.isArray(values)?values.slice(-60).flatMap(item=>{const value=sanitizeVoiceMetric(item);return value?[{...value,...(Number.isSafeInteger(item.at)?{at:item.at}:{})}]:[];}):[];}catch{return [];}
+}
 export function telegramSchema(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS telegram_outbox(id TEXT PRIMARY KEY,kind TEXT NOT NULL,text TEXT NOT NULL,state TEXT NOT NULL,created_at INTEGER NOT NULL,error TEXT,completed_at INTEGER);
     CREATE TABLE IF NOT EXISTS telegram_seen(account TEXT NOT NULL,message_id INTEGER NOT NULL,state TEXT NOT NULL,PRIMARY KEY(account,message_id));`);
@@ -18,7 +31,7 @@ export function telegramSchema(db) {
 export function telegramStatus(db,key) {
   telegramSchema(db);const config=getSecret(db,'config:telegram',key);
   const health=db.prepare("SELECT value FROM settings WHERE key='telegram:health'").get()?.value;
-  return {voice:config?.voice || TELEGRAM_VOICES[0],voice_choices:TELEGRAM_VOICES,voice_error:JSON.parse(db.prepare("SELECT value FROM settings WHERE key='telegram:voice:last_error'").get()?.value || '{}'),voice_health:JSON.parse(db.prepare("SELECT value FROM settings WHERE key='telegram:voice'").get()?.value || '{}'),conversation_enabled:!!config?.conversation_enabled,conversation_ready:!!process.env.TELEGRAM_STT_MODEL,api_id:config?.api_id || null,has_api_hash:!!config?.api_hash,app_file:!!appCredentialsFile(),account_id:config?.account_id || null,checklist:telegramChecklist(config),configured:!!config?.session,enabled:!!config?.enabled,calls_enabled:!!config?.calls_enabled,notifications:!!config?.notifications,owner_id:config?.owner_id || null,health:health?JSON.parse(health):{state:'not_connected'},outbox:db.prepare('SELECT id,kind,state,created_at,error,completed_at FROM telegram_outbox ORDER BY created_at DESC LIMIT 20').all()};
+  return {voice_metrics:voiceMetrics(db),voice:config?.voice || TELEGRAM_VOICES[0],voice_choices:TELEGRAM_VOICES,voice_error:JSON.parse(db.prepare("SELECT value FROM settings WHERE key='telegram:voice:last_error'").get()?.value || '{}'),voice_health:JSON.parse(db.prepare("SELECT value FROM settings WHERE key='telegram:voice'").get()?.value || '{}'),conversation_enabled:!!config?.conversation_enabled,conversation_ready:!!process.env.TELEGRAM_STT_MODEL,api_id:config?.api_id || null,has_api_hash:!!config?.api_hash,app_file:!!appCredentialsFile(),account_id:config?.account_id || null,checklist:telegramChecklist(config),configured:!!config?.session,enabled:!!config?.enabled,calls_enabled:!!config?.calls_enabled,notifications:!!config?.notifications,owner_id:config?.owner_id || null,health:health?JSON.parse(health):{state:'not_connected'},outbox:db.prepare('SELECT id,kind,state,created_at,error,completed_at FROM telegram_outbox ORDER BY created_at DESC LIMIT 20').all()};
 }
 export function configureTelegram(db,key,input) {
   const previous=getSecret(db,'config:telegram',key) || {};
@@ -57,15 +70,20 @@ export function queueTelegram(db,key,input) {
   db.prepare("INSERT OR IGNORE INTO telegram_outbox VALUES(?,?,?,'queued',?,NULL,NULL)").run(requestId,input.kind,input.text.trim(),Date.now());
   audit(db,'telegram.action_queued',requestId);return {ok:true,id:requestId};
 }
+function diagnosticCallback(callback,...args){
+  // Diagnostics are best-effort; neither sync errors nor rejected callbacks may escape readline.
+  try{Promise.resolve(callback?.(...args)).catch(()=>{});}catch{}
+}
 export class TelegramBridge {
-  constructor(config,{python=process.env.TELEGRAM_PYTHON || 'python3',onVoiceTurn,onVoiceState}={}) {
+  constructor(config,{python=process.env.TELEGRAM_PYTHON || 'python3',onVoiceTurn,onVoiceState,onVoiceMetric,spawnProcess=spawn}={}) {
     this.pending=new Map();this.closed=false;
     this.ready=new Promise((resolve,reject)=>{this.readyResolve=resolve;this.readyReject=reject;});
-    this.child=spawn(python,[fileURLToPath(new URL('../telegram/userbot.py',import.meta.url))],{stdio:['pipe','pipe','ignore'],env:{PATH:process.env.PATH,HOME:process.env.HOME,LANG:'C.UTF-8',...(process.env.TELEGRAM_STT_MODEL?{TELEGRAM_STT_MODEL:process.env.TELEGRAM_STT_MODEL}:{})}});
+    this.child=spawnProcess(python,[fileURLToPath(new URL('../telegram/userbot.py',import.meta.url))],{stdio:['pipe','pipe','ignore'],env:{PATH:process.env.PATH,HOME:process.env.HOME,LANG:'C.UTF-8',...(process.env.TELEGRAM_STT_MODEL?{TELEGRAM_STT_MODEL:process.env.TELEGRAM_STT_MODEL}:{})}});
     this.child.stdin.on('error',()=>{});this.child.once('error',()=>this.fail());this.child.once('exit',()=>this.fail());
     const lines=createInterface({input:this.child.stdout});lines.on('line',line=>{
       let result;try{result=JSON.parse(line);}catch{return;}
-      if(result.event==='voice_state'){if(['connecting','listening','thinking','speaking','closed','error','speech_unavailable','interrupted','text_fallback'].includes(result.state))onVoiceState?.(result.state,{stage:typeof result.stage==='string'?result.stage.slice(0,30):undefined,error:typeof result.error==='string'?result.error.slice(0,60):undefined});return;}
+      if(result.event==='voice_metric'){const metric=sanitizeVoiceMetric(result);if(metric)diagnosticCallback(onVoiceMetric,metric);return;}
+      if(result.event==='voice_state'){if(['connecting','listening','thinking','speaking','closed','error','speech_unavailable','interrupted','interruption_failed','text_fallback'].includes(result.state))diagnosticCallback(onVoiceState,result.state,{stage:typeof result.stage==='string'?result.stage.slice(0,30):undefined,error:typeof result.error==='string'?result.error.slice(0,60):undefined});return;}
       if(result.event==='voice_turn'){
         if(!onVoiceTurn || typeof result.turn_id!=='string' || typeof result.text!=='string' || result.text.length>2000)return;
         Promise.resolve().then(()=>onVoiceTurn(result.text)).catch(()=> 'I could not prepare a reply. Please check the model connection in Conclave.').then(text=>{if(!this.closed)return this.request('voice_answer',{turn_id:result.turn_id,text:String(text).slice(0,2400)});}).catch(()=>{});return;
@@ -85,7 +103,12 @@ export class TelegramBridge {
   close(){this.fail();}
 }
 export class TelegramWorker {
-  constructor(db,key,{bridgeFactory=config=>new TelegramBridge(config,{onVoiceTurn:text=>this.voiceReply(text),onVoiceState:(state,detail)=>this.voiceState(state,detail)}),reply=modelReply,instructions=()=>''}={}){this.db=db;this.key=key;this.bridgeFactory=bridgeFactory;this.reply=reply;this.instructions=instructions;this.active=new Set();this.lastPoll=0;telegramSchema(db);db.prepare("UPDATE telegram_outbox SET state='uncertain',error='Worker restarted during delivery' WHERE state='running'").run();}
+  constructor(db,key,{bridgeFactory=config=>new TelegramBridge(config,{onVoiceTurn:text=>this.voiceReply(text),onVoiceState:(state,detail)=>this.voiceState(state,detail),onVoiceMetric:metric=>this.voiceMetric(metric)}),reply=modelReply,instructions=()=>''}={}){this.db=db;this.key=key;this.bridgeFactory=bridgeFactory;this.reply=reply;this.instructions=instructions;this.active=new Set();this.lastPoll=0;telegramSchema(db);db.prepare("UPDATE telegram_outbox SET state='uncertain',error='Worker restarted during delivery' WHERE state='running'").run();}
+  voiceMetric(input){
+    const metric=sanitizeVoiceMetric(input);if(!metric)return;
+    const values=[...voiceMetrics(this.db),{...metric,at:Date.now()}].slice(-60);
+    try{this.db.prepare("INSERT INTO settings VALUES('telegram:voice:metrics',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(values));}catch{/* Losing diagnostics must not interrupt voice delivery. */}
+  }
   voiceState(state,detail={}){
     const value=JSON.stringify({state,...detail,at:Date.now()});
     this.db.prepare("INSERT INTO settings VALUES('telegram:voice',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(value);

@@ -47,13 +47,15 @@ try {
   await page.goto(base+'/#/hub?new=1');await page.locator('#q-target').waitFor();
   await page.locator('#q-target [data-v="codex"]').click();
   assert.equal(await page.locator('#q-target [aria-pressed="true"]').count(),2);
-  await page.locator('#q-target [data-v="council"]').click();
-  assert.equal(await page.locator('#q-target [aria-pressed="true"]').count(),3);
   await page.locator('#q-target [data-v="claude"]').click();
   assert.equal(await page.locator('#q-target [data-v="codex"]').getAttribute('aria-pressed'),'true');
+  await page.locator('#q-target [data-v="council"]').click();
+  assert.equal(await page.locator('#q-target [aria-pressed="true"]').count(),1);
+  assert.equal(await page.locator('#q-target [data-v="council"]').getAttribute('aria-pressed'),'true');
+  assert.equal(await page.locator('#q-target [data-v="codex"]').getAttribute('aria-pressed'),'false');
   await page.locator('#nc2').click();await page.locator('#nc-target').waitFor();
-  assert.equal(await page.locator('#nc-target [data-v="codex"]').getAttribute('aria-pressed'),'true');
   assert.equal(await page.locator('#nc-target [data-v="council"]').getAttribute('aria-pressed'),'true');
+  assert.equal(await page.locator('#nc-target [data-v="codex"]').getAttribute('aria-pressed'),'false');
   await page.locator('#nc-cwd').fill(project);await page.locator('#nc-go').click();await page.locator('#input').waitFor();
   const createdId=page.url().split('/hub/')[1];const created=await(await fetch(base+'/api/threads/'+createdId)).json();assert.equal(created.target,'council');assert.deepEqual(created.settings.members,['codex']);
   await page.goto(base+'/#/hub/'+thread.id);await page.locator('#input').waitFor();
@@ -83,7 +85,7 @@ try {
   await page.goto(base+'/#/runner');await page.getByRole('link').filter({hasText:'fixture-project'}).first().waitFor();
   await page.goto(base+'/#/project/'+encodeURIComponent(project));await page.locator('#project-plan-quick').click();await page.getByRole('heading',{name:'Synthetic project plan'}).waitFor();await page.locator('#plan-quick-close').click();
   const synthetic={id:'stream-fixture',role:'agent',tool:'codex',status:'running',content:'Synthetic streaming output.\n'.repeat(500),created:now(),activity:[]};
-  await page.route('**/api/threads/'+thread.id,async route=>{const response=await route.fetch();const data=await response.json();data.running=true;data.messages=[...data.messages,synthetic];await route.fulfill({json:data});});
+  await page.route('**/api/threads/'+thread.id+'*',async route=>{const response=await route.fetch();const data=await response.json();data.running=true;data.messages=[...data.messages,synthetic];await route.fulfill({json:data});});
   await page.evaluate(() => {
     const Native=window.EventSource;
     window.EventSource=class extends Native {

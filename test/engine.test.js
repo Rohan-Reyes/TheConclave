@@ -17,6 +17,33 @@ import fs from 'node:fs';
 let p=''; for await (const c of process.stdin) p+=c;
 const role=process.argv[2];
 const task=p.split('--- Your task now ---').at(-1);
+if(task.includes('parallel-question-fixture') && role==='ea') {
+  console.log('\u0060\u0060\u0060conclave-question\\n'+JSON.stringify({question:'Choose a fixture option?',options:['yes','no']})+'\\n\u0060\u0060\u0060');process.exit(0);
+}
+if(task.includes('parallel-question-fixture') && role==='eb') {
+  fs.writeFileSync('eb.started','yes');
+  for(let i=0;i<300 && !fs.existsSync('release-processes');i++)await new Promise(r=>setTimeout(r,10));
+}
+if(task.includes('bounded-slot-fixture')) {
+  fs.appendFileSync('process-trace.jsonl',JSON.stringify({role,event:'start'})+'\\n');
+  fs.writeFileSync(role+'.started','yes');
+  for(let i=0;i<300 && !fs.existsSync('release-processes');i++) await new Promise(r=>setTimeout(r,10));
+  fs.appendFileSync('process-trace.jsonl',JSON.stringify({role,event:'end'})+'\\n');
+}
+if(task.includes('capture-initial-fixture')) {
+  fs.writeFileSync(role+'.prompt',p);
+  console.log('PEER_REPLY_MARKER_'+role);process.exit(0);
+}
+if(task.includes('one-fails-fixture') && role==='ea') {console.error('fixture launch failure');process.exit(2);}
+if(task.includes('dedup-relay-fixture')) {
+  fs.writeFileSync(role+'.prompt',p);
+  if(role==='ec')console.log('COMBINED_REVIEW_DONE');else {console.log(role.toUpperCase()+'_INITIAL_COMPLETED');console.log('@ec please review the combined answers');}process.exit(0);
+}
+if(task.includes('hop-relay-fixture')) {
+  const chain=['ea','eb','ec','ed','ee','ef'];const next=chain[chain.indexOf(role)+1];
+  console.log(next?'@'+next+' continue':'finished chain');process.exit(0);
+}
+
 if(task.includes('capture-global-fixture'))fs.writeFileSync('captured-global.json',JSON.stringify({prompt:p,credential:process.env.FIXTURE_ACCESS==='synthetic-fixture-value',master:!!process.env.TOKEN_ENCRYPTION_KEY}));
 if (task.includes('detached-grandchild')) {
   const sleeper=spawn(process.execPath,['-e','setTimeout(()=>{},4000)'],{stdio:'inherit'});
@@ -62,7 +89,7 @@ if (task.includes('takeover-check')) {
 }
 console.log(role+' finished');
 `);
-for (const id of ['ea', 'eb', 'quota', 'reviewfail']) D.saveAgent({ id, name: id, command: process.execPath, args: [fake, id], input: 'stdin' });
+for (const id of ['ea', 'eb', 'ec', 'ed', 'ee', 'ef', 'quota', 'reviewfail']) D.saveAgent({ id, name: id, command: process.execPath, args: [fake, id], input: 'stdin' });
 const dirs = [];
 function chat(settings = {}, cwd) {
   cwd ||= fs.mkdtempSync(path.join(temp, 'project-')); dirs.push(cwd);
@@ -457,4 +484,125 @@ test('new turns receive owner prompts and selected credentials without putting s
     const result=JSON.parse(fs.readFileSync(path.join(t.cwd,'captured-global.json'),'utf8'));
     assert.match(result.prompt,/Global fixture: use short paragraphs/);assert.match(result.prompt,/FIXTURE_ACCESS/);assert.doesNotMatch(result.prompt,/synthetic-fixture-value/);assert.equal(result.credential,true);assert.equal(result.master,false);
   }finally{G.deletePrompt(p.id);G.deleteVariable('FIXTURE_ACCESS');if(prior===undefined)delete process.env.TOKEN_ENCRYPTION_KEY;else process.env.TOKEN_ENCRYPTION_KEY=prior;}
+});
+
+async function waitForFixture(predicate, label) {
+  for(let i=0;i<200;i++){if(predicate())return;await new Promise(r=>setTimeout(r,20));}
+  throw new Error('Timed out: '+label);
+}
+async function withProcessLimit(limit, fn) {
+  const old=process.env.CONCLAVE_MAX_AGENT_PROCESSES;process.env.CONCLAVE_MAX_AGENT_PROCESSES=String(limit);
+  try{return await fn();}finally{if(old===undefined)delete process.env.CONCLAVE_MAX_AGENT_PROCESSES;else process.env.CONCLAVE_MAX_AGENT_PROCESSES=old;}
+}
+function releaseFixture(thread){fs.writeFileSync(path.join(thread.cwd,'release-processes'),'release');}
+
+test('direct read combinations overlap and the default cap queues a fourth process',async()=>{
+ await withProcessLimit(3,async()=>{
+  const t=chat({permission:'read',members:['ea','eb','ec','ed'],responders:['ea','eb','ec','ed']});
+  try{
+   await T.sendMessage(t.id,'bounded-slot-fixture');
+   await waitForFixture(()=>['ea','eb','ec'].every(a=>fs.existsSync(path.join(t.cwd,a+'.started'))),'first three processes');
+   assert.equal(fs.existsSync(path.join(t.cwd,'ed.started')),false);
+   assert.deepEqual(T.getAgentProcessStats(),{limit:3,active:3,queued:1});
+   assert.equal(T.getThread(t.id).messages.find(m=>m.tool==='ed').phase,'queued');
+   releaseFixture(t);const done=await idle(t.id);assert.ok(done.messages.filter(m=>m.role==='agent').every(m=>m.status==='done'));
+   let active=0,peak=0;for(const item of fs.readFileSync(path.join(t.cwd,'process-trace.jsonl'),'utf8').trim().split('\n').map(JSON.parse)){active+=item.event==='start'?1:-1;peak=Math.max(peak,active);}
+   assert.equal(peak,3);assert.equal(active,0);assert.equal(T.getAgentProcessStats().active,0);
+  }finally{releaseFixture(t);await idle(t.id);}
+ });
+});
+
+test('capacity-delayed initial responders use the same pre-reply context snapshot',async()=>{
+ await withProcessLimit(1,async()=>{
+  const t=chat({permission:'read',members:['ea','eb'],responders:['ea','eb']});
+  await T.sendMessage(t.id,'capture-initial-fixture original user request');await idle(t.id);
+  for(const tool of ['ea','eb']){
+   const prompt=fs.readFileSync(path.join(t.cwd,tool+'.prompt'),'utf8');assert.match(prompt,/original user request/);
+   assert.doesNotMatch(prompt,/PEER_REPLY_MARKER_/);
+  }
+  assert.equal(T.getThread(t.id).messages.filter(m=>m.role==='agent' && m.status==='done').length,2);
+ });
+});
+
+test('workspace lock waiters do not occupy capacity needed by unrelated work',async()=>{
+ await withProcessLimit(2,async()=>{
+  const writer=chat(),blocked=chat({},writer.cwd),reader=chat({permission:'read'});
+  try{
+   await T.sendMessage(writer.id,'bounded-slot-fixture writer');await waitForFixture(()=>fs.existsSync(path.join(writer.cwd,'ea.started')),'first writer');
+   await T.sendMessage(blocked.id,'bounded-slot-fixture blocked writer');
+   await waitForFixture(()=>T.getThread(blocked.id).messages.some(m=>m.role==='agent' && m.phase==='queued'),'queued writer');
+   await T.sendMessage(reader.id,'bounded-slot-fixture independent reader');await waitForFixture(()=>fs.existsSync(path.join(reader.cwd,'ea.started')),'independent reader');
+   assert.equal(T.getAgentProcessStats().active,2);assert.equal(T.getAgentProcessStats().queued,0);
+   assert.equal(fs.readFileSync(path.join(writer.cwd,'process-trace.jsonl'),'utf8').trim().split('\n').length,1,'second writer has not launched');
+  }finally{releaseFixture(writer);releaseFixture(reader);await Promise.all([idle(writer.id),idle(blocked.id),idle(reader.id)]);}
+  const trace=fs.readFileSync(path.join(writer.cwd,'process-trace.jsonl'),'utf8').trim().split('\n').map(JSON.parse);assert.deepEqual(trace.map(x=>x.event),['start','end','start','end']);
+ });
+});
+
+test('stopping a capacity-queued turn prevents launch and leaves no capacity leak',async()=>{
+ await withProcessLimit(1,async()=>{
+  const holder=chat({permission:'read'}),queued=chat({permission:'read'});
+  try{
+   await T.sendMessage(holder.id,'bounded-slot-fixture holder');await waitForFixture(()=>fs.existsSync(path.join(holder.cwd,'ea.started')),'capacity holder');
+   await T.sendMessage(queued.id,'bounded-slot-fixture queued');await waitForFixture(()=>T.getAgentProcessStats().queued===1,'queued capacity');
+   T.stopThread(queued.id);const done=await idle(queued.id);
+   assert.equal(done.messages.find(m=>m.role==='agent').status,'stopped');assert.equal(fs.existsSync(path.join(queued.cwd,'ea.started')),false);
+   assert.deepEqual(T.getAgentProcessStats(),{limit:1,active:1,queued:0});
+  }finally{releaseFixture(holder);await Promise.all([idle(holder.id),idle(queued.id)]);}
+  const next=chat({permission:'read'});await T.sendMessage(next.id,'capacity available again');assert.equal((await idle(next.id)).messages.at(-1).status,'done');assert.equal(T.getAgentProcessStats().active,0);
+ });
+});
+
+test('an agent failure releases its slot for another selected responder',async()=>{
+ await withProcessLimit(1,async()=>{
+  const t=chat({permission:'read',responders:['ea','eb']});await T.sendMessage(t.id,'one-fails-fixture');
+  const done=await idle(t.id);assert.equal(done.messages.find(m=>m.tool==='ea').status,'error');assert.equal(done.messages.find(m=>m.tool==='eb').status,'done');assert.equal(T.getAgentProcessStats().active,0);
+ });
+});
+
+test('duplicate initial handoffs are coalesced and run after both initial responses',async()=>{
+ const t=chat({permission:'read',autoRelay:true,members:['ea','eb','ec'],responders:['ea','eb']});
+ await T.sendMessage(t.id,'dedup-relay-fixture');const done=await idle(t.id);
+ assert.deepEqual(done.messages.filter(m=>m.role==='agent').map(m=>m.tool),['ea','eb','ec']);
+ const prompt=fs.readFileSync(path.join(t.cwd,'ec.prompt'),'utf8');assert.match(prompt,/EA_INITIAL_COMPLETED/);assert.match(prompt,/EB_INITIAL_COMPLETED/);
+});
+
+test('ordered relay chains keep the hop limit under concurrent direct dispatch',async()=>{
+ const t=chat({permission:'read',autoRelay:true,members:['ea','eb','ec','ed','ee','ef']});
+ await T.sendMessage(t.id,'hop-relay-fixture');const done=await idle(t.id);
+ assert.deepEqual(done.messages.filter(m=>m.role==='agent').map(m=>m.tool),['ea','eb','ec','ed','ee']);
+ assert.ok(done.messages.some(m=>m.role==='system' && /after 4 hops/.test(m.content)));
+});
+
+test('same native-session waiters leave free process capacity for another chat',async()=>{
+ await withProcessLimit(2,async()=>{
+  const t=chat(), p=plan(t,[{owner:'ea',kind:'read',title:'bounded-slot-fixture'},{owner:'ea',kind:'read',title:'bounded-slot-fixture'}]);
+  const other=chat({permission:'read'});
+  try{
+   T.runPlan(t.id,p.id);await waitForFixture(()=>fs.existsSync(path.join(t.cwd,'ea.started')),'session holder');
+   await T.sendMessage(other.id,'bounded-slot-fixture other session');await waitForFixture(()=>fs.existsSync(path.join(other.cwd,'ea.started')),'unrelated native session');
+   assert.deepEqual(T.getAgentProcessStats(),{limit:2,active:2,queued:0});
+  }finally{releaseFixture(t);releaseFixture(other);await Promise.all([idle(t.id),idle(other.id)]);}
+  assert.equal(T.getPlan(p.id).status,'done');
+  const order=fs.readFileSync(path.join(t.cwd,'process-trace.jsonl'),'utf8').trim().split('\n').map(JSON.parse);assert.deepEqual(order.map(x=>x.event),['start','end','start','end']);
+ });
+});
+
+test('multi-agent quota exhaustion retains a single automatic reset wait',async()=>{
+ F.markExhausted('ea','usage limit, try again in 3 hours');F.markExhausted('eb','usage limit, try again in 2 hours');
+ const t=chat({permission:'read',responders:['ea','eb'],fallback:{enabled:true,order:['ea','eb'],waitForReset:true}});
+ try{
+  await T.sendMessage(t.id,'parallel all-out fixture');await idle(t.id);
+  assert.ok(T.waitingInfo(t.id));assert.equal(T.getThread(t.id).messages.filter(m=>m.role==='system' && /All agents are out of credits/.test(m.content)).length,1);
+ }finally{T.cancelWaiting(t.id);F.clearExhausted('ea');F.clearExhausted('eb');}
+});
+
+test('a completed initial responder can ask the owner while its peer is still working',async()=>{
+ const t=chat({permission:'read',responders:['ea','eb']});
+ try{
+  await T.sendMessage(t.id,'parallel-question-fixture');
+  await waitForFixture(()=>T.getThread(t.id).questions.some(q=>q.status==='pending'),'initial question');
+  assert.equal(T.getThread(t.id).running,true);
+  assert.ok(T.getThread(t.id).messages.some(m=>m.tool==='eb' && m.status==='running'));
+ }finally{releaseFixture(t);await idle(t.id);}
 });

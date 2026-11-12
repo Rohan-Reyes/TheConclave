@@ -63,6 +63,8 @@ function setActiveNav(nav) {
   document.title = title === 'Conclave' ? 'Conclave' : `${title} · Conclave`;
 }
 
+let currentNav = '';
+
 async function route() {
   if (typeof window === 'undefined') return;
   const hash = location.hash.slice(1) || '/';
@@ -70,27 +72,49 @@ async function route() {
   const params = new URLSearchParams(qs || '');
   const view = $('#view');
   if (!view) return;
-  leaveHub();
+
+  const isHubRoute = p.startsWith('/hub');
+  const isStayingInHub = isHubRoute && currentNav === 'hub' && !!view.querySelector('.cv-layout');
+
+  if (!isStayingInHub) {
+    leaveHub();
+  }
   leaveJarvisPage();
   leaveManagement();
   leaveMemory3d();
   closeDrawer();
   closeAccountMenu();
-  document.body.classList.toggle('is-hub', p.startsWith('/hub'));
+  document.body.classList.toggle('is-hub', isHubRoute);
   document.body.classList.toggle('is-gx', p === '/management');
   document.body.classList.toggle('is-m3', p === '/mind' || p === '/jarvis/memory');
   markRecent(p);
+
   for (const [re, nav, fn] of routes) {
     const m = p.match(re);
     if (!m) continue;
     setActiveNav(nav);
-    view.innerHTML = '<div class="empty">Loading…</div>';
-    try { await fn(view, params, ...m.slice(1).map(decodeURIComponent)); }
-    catch (e) { view.innerHTML = `<div class="empty">Error: ${e.message}</div>`; }
-    window.scrollTo(0, 0);
+    currentNav = nav;
+
+    if (!isStayingInHub) {
+      view.innerHTML = '<div class="empty">Loading…</div>';
+    }
+
+    try {
+      await fn(view, params, ...m.slice(1).map(decodeURIComponent));
+    } catch (e) {
+      if (!isStayingInHub) {
+        view.innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+      } else {
+        toast(`Error: ${e.message}`, true);
+      }
+    }
+    if (!isStayingInHub) {
+      window.scrollTo(0, 0);
+    }
     return;
   }
   setActiveNav('');
+  currentNav = '';
   view.innerHTML = '<div class="empty">Page not found. <a href="#/">Go to Overview</a></div>';
 }
 
