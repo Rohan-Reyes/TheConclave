@@ -22,11 +22,12 @@ async def synthesize(text, path, voice=DEFAULT_VOICE):
 
 
 class CallAudio:
-    def __init__(self, calls, owner_id, config, lock, reply, model_path=None, notify=lambda state: None):
+    def __init__(self, calls, owner_id, config, lock, reply, model_path=None, notify=lambda state, detail=None: None):
         self.calls, self.owner_id, self.config = calls, owner_id, config
         self.lock, self.reply = lock, reply
         self.notify = notify
         self.model_path = model_path
+        self.stage = 'idle'
         self.model = None
         self.session_task = None
         self.playback = None
@@ -116,19 +117,26 @@ class CallAudio:
 
     async def converse(self):
         from vosk import KaldiRecognizer
-        from pytgcalls.types import RecordStream
+        from pytgcalls.types import RecordStream, MediaStream, ExternalMedia
         from pytgcalls.types.raw import AudioParameters
         failed = False
         try:
             async with self.lock:
+                self.stage='connecting'
                 self.notify('connecting')
                 self.closed.clear()
                 # Accept only the pending call from the configured owner.
-                await asyncio.wait_for(self.calls.play(self.owner_id), 30)
+                await asyncio.wait_for(self.calls.play(self.owner_id, MediaStream(ExternalMedia.AUDIO)), 30)
+                self.stage='recording'
                 await self.calls.record(self.owner_id, RecordStream(audio=True, audio_parameters=AudioParameters(bitrate=16000, channels=1)))
-                await self.say('Hello. This is Jarvis. I am listening. Please speak English and pause when you finish. Say goodbye to end the call.')
+                self.stage='greeting'
+                try:
+                    await self.say('Hello. This is Jarvis. I am listening. Please speak English and pause when you finish. Say goodbye to end the call.')
+                except Exception as error:
+                    self.notify('speech_unavailable',{'stage':self.stage,'error':type(error).__name__})
                 async with asyncio.timeout(600):
                     while not self.closed.is_set():
+                        self.stage='listening'
                         self.notify('listening')
                         recognizer = KaldiRecognizer(self.model, 16000)
                         try:
@@ -139,16 +147,21 @@ class CallAudio:
                             break
                         if text in ('goodbye', 'bye jarvis', 'hang up', 'end call', 'stop call'):
                             await self.say('Goodbye.'); break
+                        self.stage='thinking'
                         self.notify('thinking')
                         answer = await asyncio.wait_for(self.reply(text), 100)
                         if not self.closed.is_set():
-                            await self.say(answer)
+                            self.stage='speaking'
+                            try:
+                                await self.say(answer)
+                            except Exception as error:
+                                self.notify('speech_unavailable',{'stage':self.stage,'error':type(error).__name__})
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as error:
             # Neither transcripts nor raw provider error messages belong in logs.
             failed = True
-            self.notify('error')
+            self.notify('error',{'stage':self.stage,'error':type(error).__name__})
         finally:
             if not failed:
                 self.notify('closed')

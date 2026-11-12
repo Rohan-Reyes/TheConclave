@@ -1,3 +1,4 @@
+import {modelCommand} from './model-settings.js';
 import { relevantMemories, recordActivity } from './memory-graph.js';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
@@ -17,7 +18,7 @@ export function telegramSchema(db) {
 export function telegramStatus(db,key) {
   telegramSchema(db);const config=getSecret(db,'config:telegram',key);
   const health=db.prepare("SELECT value FROM settings WHERE key='telegram:health'").get()?.value;
-  return {voice:config?.voice || TELEGRAM_VOICES[0],voice_choices:TELEGRAM_VOICES,voice_health:JSON.parse(db.prepare("SELECT value FROM settings WHERE key='telegram:voice'").get()?.value || '{}'),conversation_enabled:!!config?.conversation_enabled,conversation_ready:!!process.env.TELEGRAM_STT_MODEL,api_id:config?.api_id || null,has_api_hash:!!config?.api_hash,app_file:!!appCredentialsFile(),account_id:config?.account_id || null,checklist:telegramChecklist(config),configured:!!config?.session,enabled:!!config?.enabled,calls_enabled:!!config?.calls_enabled,notifications:!!config?.notifications,owner_id:config?.owner_id || null,health:health?JSON.parse(health):{state:'not_connected'},outbox:db.prepare('SELECT id,kind,state,created_at,error,completed_at FROM telegram_outbox ORDER BY created_at DESC LIMIT 20').all()};
+  return {voice:config?.voice || TELEGRAM_VOICES[0],voice_choices:TELEGRAM_VOICES,voice_error:JSON.parse(db.prepare("SELECT value FROM settings WHERE key='telegram:voice:last_error'").get()?.value || '{}'),voice_health:JSON.parse(db.prepare("SELECT value FROM settings WHERE key='telegram:voice'").get()?.value || '{}'),conversation_enabled:!!config?.conversation_enabled,conversation_ready:!!process.env.TELEGRAM_STT_MODEL,api_id:config?.api_id || null,has_api_hash:!!config?.api_hash,app_file:!!appCredentialsFile(),account_id:config?.account_id || null,checklist:telegramChecklist(config),configured:!!config?.session,enabled:!!config?.enabled,calls_enabled:!!config?.calls_enabled,notifications:!!config?.notifications,owner_id:config?.owner_id || null,health:health?JSON.parse(health):{state:'not_connected'},outbox:db.prepare('SELECT id,kind,state,created_at,error,completed_at FROM telegram_outbox ORDER BY created_at DESC LIMIT 20').all()};
 }
 export function configureTelegram(db,key,input) {
   const previous=getSecret(db,'config:telegram',key) || {};
@@ -64,7 +65,7 @@ export class TelegramBridge {
     this.child.stdin.on('error',()=>{});this.child.once('error',()=>this.fail());this.child.once('exit',()=>this.fail());
     const lines=createInterface({input:this.child.stdout});lines.on('line',line=>{
       let result;try{result=JSON.parse(line);}catch{return;}
-      if(result.event==='voice_state'){if(['connecting','listening','thinking','speaking','closed','error'].includes(result.state))onVoiceState?.(result.state);return;}
+      if(result.event==='voice_state'){if(['connecting','listening','thinking','speaking','closed','error','speech_unavailable'].includes(result.state))onVoiceState?.(result.state,{stage:typeof result.stage==='string'?result.stage.slice(0,30):undefined,error:typeof result.error==='string'?result.error.slice(0,60):undefined});return;}
       if(result.event==='voice_turn'){
         if(!onVoiceTurn || typeof result.turn_id!=='string' || typeof result.text!=='string' || result.text.length>2000)return;
         Promise.resolve().then(()=>onVoiceTurn(result.text)).catch(()=> 'I could not prepare a reply. Please check the model connection in Conclave.').then(text=>{if(!this.closed)return this.request('voice_answer',{turn_id:result.turn_id,text:String(text).slice(0,2400)});}).catch(()=>{});return;
@@ -84,7 +85,12 @@ export class TelegramBridge {
   close(){this.fail();}
 }
 export class TelegramWorker {
-  constructor(db,key,{bridgeFactory=config=>new TelegramBridge(config,{onVoiceTurn:text=>this.voiceReply(text),onVoiceState:state=>this.db.prepare("INSERT INTO settings VALUES(\'telegram:voice\',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify({state,at:Date.now()}))}),reply=modelReply,instructions=()=>''}={}){this.db=db;this.key=key;this.bridgeFactory=bridgeFactory;this.reply=reply;this.instructions=instructions;this.active=new Set();this.lastPoll=0;telegramSchema(db);db.prepare("UPDATE telegram_outbox SET state='uncertain',error='Worker restarted during delivery' WHERE state='running'").run();}
+  constructor(db,key,{bridgeFactory=config=>new TelegramBridge(config,{onVoiceTurn:text=>this.voiceReply(text),onVoiceState:(state,detail)=>this.voiceState(state,detail)}),reply=modelReply,instructions=()=>''}={}){this.db=db;this.key=key;this.bridgeFactory=bridgeFactory;this.reply=reply;this.instructions=instructions;this.active=new Set();this.lastPoll=0;telegramSchema(db);db.prepare("UPDATE telegram_outbox SET state='uncertain',error='Worker restarted during delivery' WHERE state='running'").run();}
+  voiceState(state,detail={}){
+    const value=JSON.stringify({state,...detail,at:Date.now()});
+    this.db.prepare("INSERT INTO settings VALUES('telegram:voice',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(value);
+    if(detail.error)this.db.prepare("INSERT INTO settings VALUES('telegram:voice:last_error',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(value);
+  }
   async voiceReply(text){
     const config=getSecret(this.db,'config:telegram',this.key);if(!config?.enabled || !config?.conversation_enabled || !config?.calls_enabled)throw new Error('Voice conversation disabled');
     let conversation=this.db.prepare("SELECT id FROM conversations WHERE title='Jarvis' ORDER BY created_at LIMIT 1").get();
@@ -119,14 +125,17 @@ export class TelegramWorker {
         try {
           if(message.text.startsWith('/call ')){queueTelegram(db,this.key,{kind:'call',text:message.text.slice(6),request_id:'incoming-call-'+account.slice(0,12)+'-'+message.id});}
           else {
-            const conversationId='telegram-'+account.slice(0,32);db.prepare('INSERT OR IGNORE INTO conversations VALUES(?,?,?)').run(conversationId,'Telegram owner chat',Date.now());
+            const existing=db.prepare("SELECT id FROM conversations WHERE title='Jarvis' ORDER BY created_at LIMIT 1").get();
+            const conversationId=existing?.id || id();db.prepare('INSERT OR IGNORE INTO conversations VALUES(?,?,?)').run(conversationId,'Jarvis',Date.now());
             db.prepare('INSERT INTO messages VALUES(?,?,?,?,?,?)').run(id(),conversationId,'user',message.text,'telegram-owner',Date.now());
-            const answer=await this.reply(db,this.key,conversationId,[],this.instructions());
+            const answer=modelCommand(db,this.key,message.text) || await this.reply(db,this.key,conversationId,[],this.instructions());
             db.prepare('INSERT INTO messages VALUES(?,?,?,?,?,?)').run(id(),conversationId,'assistant',answer,'model',Date.now());
             queueTelegram(db,this.key,{kind:'message',text:answer.slice(0,3800),request_id:'reply-'+account.slice(0,12)+'-'+message.id});
           }
           db.prepare("UPDATE telegram_seen SET state='completed' WHERE account=? AND message_id=?").run(account,message.id);
-        }catch{db.prepare("UPDATE telegram_seen SET state='failed' WHERE account=? AND message_id=?").run(account,message.id);audit(db,'telegram.inbound_failed');}
+        }catch{
+          try{queueTelegram(db,this.key,{kind:'message',text:'I could not prepare a reply. Use /model to check or change the model, or check Connectors in Conclave.',request_id:'error-'+account.slice(0,12)+'-'+message.id});}catch{}
+          db.prepare("UPDATE telegram_seen SET state='failed' WHERE account=? AND message_id=?").run(account,message.id);audit(db,'telegram.inbound_failed');}
       }}
       db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(cursorKey,String(page.latest));
       if(config.notifications){const watermarkKey='telegram:notifications:'+account;const watermark=db.prepare('SELECT value FROM settings WHERE key=?').get(watermarkKey)?.value;

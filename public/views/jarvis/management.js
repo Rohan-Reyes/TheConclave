@@ -20,7 +20,7 @@ async function jarvisConversation() {
 
 export async function renderManagement(root) {
   leaveManagement();
-  const [me, id] = await Promise.all([jarvisMe(), jarvisConversation()]);
+  const [me, id, model] = await Promise.all([jarvisMe(), jarvisConversation(), japi('/model')]);
   const tz = me.timezone;
   const first = String(me.username || '').split(/[\s._@-]/)[0];
   const name = first ? first[0].toUpperCase() + first.slice(1) : '';
@@ -51,6 +51,11 @@ export async function renderManagement(root) {
       <p>What should Jarvis take care of?</p>
       <div class="gx-suggest">${SUGGESTIONS.map(s => `<button type="button" class="gx-suggestion">${esc(s)}</button>`).join('')}</div>
     </div>`;
+  const modelBar=document.createElement('div');modelBar.className='jx-model-bar';
+  modelBar.innerHTML=`<label>Model provider<select id="j-model-provider">${model.choices.map(c=>`<option value="${esc(c.provider)}" ${c.provider===model.provider?'selected':''} ${!c.configured?'disabled':''}>${esc(c.provider)}${c.configured?'':' · configure in Connectors'}</option>`).join('')}</select></label><label>Model ID<input id="j-model-id" maxlength="200" placeholder="Default for CLI" value="${esc(model.model)}"></label><button type="button" id="j-model-save">Apply model</button>`;
+  root.querySelector('#j-form').before(modelBar);
+  root.querySelector('#j-model-save').onclick=async()=>{const b=root.querySelector('#j-model-save');b.disabled=true;try{await japi('/model',{provider:root.querySelector('#j-model-provider').value,model:root.querySelector('#j-model-id').value});toast('Model updated for the next reply');}catch(e){toast(e.message,true);}finally{b.disabled=false;}};
+  root.querySelector('#j-model-provider').onchange=()=>{root.querySelector('#j-model-id').value='';};
   const show = data => {
     msgs.innerHTML = data.length ? data.map(m => m.role === 'user'
       ? `<div class="gx-msg user"><div class="gx-bubble">${esc(m.content)}</div></div>`

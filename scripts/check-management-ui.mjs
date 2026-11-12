@@ -26,6 +26,8 @@ try{
  await page.goto(base+'/#/management');
  await page.locator('.jarvis-mgmt .gx-hello').waitFor();
  assert.equal(await page.locator('.assistant-frame').count(),0);
+ await page.locator('#j-model-provider').selectOption('codex-cli');await page.locator('#j-model-id').fill('fixture-model');await page.locator('#j-model-save').click();
+ assert.equal((await (await page.request.get(base+'/assistant/api/model')).json()).provider,'codex-cli');
  await page.locator('[data-nav="automations"]').click();await page.getByRole('heading',{name:'Your reminders'}).waitFor();
  assert.equal(await page.locator('#sidebar').count(),1);
  assert.equal(await page.locator('iframe').count(),0);
@@ -38,6 +40,9 @@ try{
   assert.equal(cardBg,await page.evaluate(c=>{const d=document.createElement('div');d.style.color=c;document.body.append(d);const v=getComputedStyle(d).color;d.remove();return v;},panel));
  }
  for(const [nav,heading] of [['today','Weather'],['inbox','Your approval matters'],['notes','New note'],['connectors','Model provider']]){await page.locator(`[data-nav="${nav}"]`).first().click();await page.getByRole('heading',{name:heading}).waitFor();}
+ const github=page.locator('.jx-card').filter({has:page.getByRole('heading',{name:'GitHub',exact:true})});
+ await github.locator('[name=credential]').fill('fixture-browser-service-token');await github.getByRole('button',{name:'Save encrypted credential'}).click();
+ await github.getByRole('button',{name:'Read from service'}).waitFor();assert.equal(await github.locator('[name=credential]').inputValue(),'');
  assert.equal(await page.locator('.version-badge').textContent(),'v2.0.0');
  await page.locator('[data-nav="mind"]').click();await page.locator('#m3-stage canvas').waitFor({timeout:30000});
  await page.locator('[data-view="list"]').click();await page.locator('#m3-q').fill('Project memory 0');await page.waitForFunction(()=>document.querySelectorAll('.m3-item').length===1);await page.locator('.m3-item').first().click();

@@ -1,3 +1,5 @@
+import {externalStatus,saveExternal,removeExternal,readExternal,sendDiscord} from './external-services.js';
+import {modelSettings,switchModel} from './model-settings.js';
 import { telegramSchema, telegramStatus, configureTelegram, queueTelegram, TelegramLogin } from './telegram.js';
 import { createServer } from 'node:http';
 import { createServer as createSecureServer } from 'node:https';
@@ -319,6 +321,12 @@ export function createApp({ db = openDb(), origin = process.env.APP_ORIGIN || 'h
           audit(db, `draft.${b.decision}`, approval.draft_id);
         }); json({ ok: true }); return;
       }
+      if(path==='/api/services' && method==='GET'){json(externalStatus(db,encryptionKey));return;}
+      if(/^\/api\/services\/(github|notion|discord)$/.test(path)){const provider=path.split('/').at(-1);if(method==='POST'){json(saveExternal(db,encryptionKey,provider,b));return;}if(method==='DELETE'){json(removeExternal(db,provider));return;}}
+      if(/^\/api\/services\/(github|notion|discord)\/read$/.test(path) && method==='POST'){json(await readExternal(db,encryptionKey,path.split('/')[3],b));return;}
+      if(path==='/api/services/discord/send' && method==='POST'){json(await sendDiscord(db,encryptionKey,b));return;}
+      if(path==='/api/model' && method==='GET'){json(modelSettings(db,encryptionKey));return;}
+      if(path==='/api/model' && method==='POST'){json(switchModel(db,encryptionKey,b));return;}
       if (path === '/api/connections' && method === 'GET') {
         json(['google', 'microsoft', 'weather', 'model'].map(provider => {
           const config = getSecret(db, `config:${provider}`, encryptionKey);
@@ -331,8 +339,8 @@ export function createApp({ db = openDb(), origin = process.env.APP_ORIGIN || 'h
         let config;
         if (['google', 'microsoft'].includes(b.provider)) config = { client_id: str(b.client_id, 500), client_secret: str(b.client_secret, 2000), tenant: str(b.tenant || 'common', 200) };
         if (b.provider === 'model') {
-          if (!['openai', 'anthropic','claude-cli','codex-cli','antigravity-cli'].includes(b.model_provider)) fail(400, 'Choose a supported model provider');
-          config = { provider: b.model_provider, model: b.model_provider.endsWith('-cli') ? String(b.model || '').slice(0,200) : str(b.model, 200), ...(b.model_provider.endsWith('-cli') ? {} : { api_key: str(b.api_key, 2000) }) };
+          switchModel(db,encryptionKey,{provider:b.model_provider,model:String(b.model || ''),api_key:b.api_key});
+          json({ok:true});return;
         }
         if (b.provider === 'weather') {
           if (b.accept_terms !== true) fail(400, 'Confirm eligible personal use and Open-Meteo terms');
@@ -348,7 +356,7 @@ export function createApp({ db = openDb(), origin = process.env.APP_ORIGIN || 'h
       if (/^\/api\/connections\/(google|microsoft)\/authorize$/.test(path) && method === 'POST') { json({ url: beginOAuth(db, path.split('/')[3], b.permission, sessionId, origin, encryptionKey) }); return; }
       if (/^\/api\/connections\/(google|microsoft|model|weather)$/.test(path) && method === 'DELETE') {
         const provider = path.split('/').at(-1);
-        transaction(db, () => { db.prepare('DELETE FROM connections WHERE provider=?').run(provider); db.prepare('DELETE FROM secrets WHERE key=?').run(`config:${provider}`); audit(db, 'connection.disconnected', provider); }); json({ ok: true }); return;
+        transaction(db, () => { db.prepare('DELETE FROM connections WHERE provider=?').run(provider); db.prepare('DELETE FROM secrets WHERE key=?').run(`config:${provider}`); if(provider==='model')db.prepare("DELETE FROM secrets WHERE key LIKE 'config:model:%'").run(); audit(db, 'connection.disconnected', provider); }); json({ ok: true }); return;
       }
       if (path === '/api/email' && method === 'GET') { json(await readEmail(db, url.searchParams.get('provider'), encryptionKey, url.searchParams.get('q') || '')); return; }
       if (path === '/api/calendar' && method === 'GET') { json(await readCalendar(db, url.searchParams.get('provider'), encryptionKey)); return; }

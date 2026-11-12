@@ -13,6 +13,7 @@ async function connections() {
   for (const [href, text] of [['#/telegram', 'Telegram userbot →'], ['#/jarvis/devices', 'Devices & companions →'], ['#/assistant-settings', 'Jarvis settings →']]) { const a = el('a', text); a.href = href; links.append(a); }
   root().append(links);
   const list = await api('/connections'), g = grid();
+  await externalConnectors();
   for (const p of list) {
     const c = card(PROVIDER_TITLE[p.provider] || p.provider, null, g); c.append(tag(p.status));
     if (p.provider === 'google' || p.provider === 'microsoft') {
@@ -33,9 +34,9 @@ async function connections() {
       c.append(el('p', p.model_provider ? `Configured: ${p.model_provider} · ${p.model || 'CLI default model'}` : 'Connect an API account or an existing server CLI login to enable assistant responses.', 'muted'));
       const f = form(c, 'Save model connection', async (b, f) => { await api('/connections', { ...b, provider: 'model' }); f.reset(); toast('Model configuration saved'); await render(); });
       const provider = select(f, 'Provider', 'model_provider', [['openai', 'OpenAI API'], ['anthropic', 'Anthropic API'], ['claude-cli', 'Claude Code CLI · existing server login'], ['codex-cli', 'Codex CLI · existing server login'], ['antigravity-cli', 'Antigravity CLI · existing server login']], p.model_provider);
-      const model = field(f, 'Model ID (optional for CLI default)', 'model', 'text', p.model || ''), apiKey = field(f, 'API key (API providers only)', 'api_key', 'password');
+      const model = field(f, 'Model ID (optional for CLI default)', 'model', 'text', p.model || ''), apiKey = field(f, 'API key (blank keeps saved key for this provider)', 'api_key', 'password');
       model.autocomplete = 'off'; apiKey.autocomplete = 'new-password';
-      const update = () => { const cli = provider.value.endsWith('-cli'); model.required = !cli; apiKey.required = !cli; apiKey.parentElement.hidden = cli; };
+      const update = () => { const cli = provider.value.endsWith('-cli'); model.required = !cli; apiKey.required = false; apiKey.parentElement.hidden = cli; };
       provider.onchange = update; update(); f.addButton();
       const inventoryBox = el('div');
       actions(c, [button('Check CLIs on this server', async () => { const inv = await api('/connections/cli'); inventoryBox.replaceChildren(); for (const i of inv) item(inventoryBox, i.label || i.provider, i.installed ? `${i.version} · ${i.note}` : (i.note || 'Not found on the agent bridge')); })]);
@@ -162,4 +163,25 @@ async function settings() {
 
   const privacy = card('Privacy & audit', 'Private credentials are encrypted separately from conversation content. Protect your server backups and encryption key.', g);
   const log = await api('/audit'); for (const a of log.slice(0, 15)) item(privacy, a.event.replaceAll('.', ' · '), date(a.created_at));
+}
+
+async function externalConnectors(){
+ const services=await api('/services'),group=grid();
+ const descriptions={github:'Create a fine-grained token restricted to repositories Jarvis may read. Read-only repository and assigned-issue access.',notion:'Create a Notion integration, then share the pages you want Jarvis to find with it. This connector searches titles; it does not import full page bodies.',discord:'Create an incoming webhook for one channel. Messages require your explicit confirmation; this does not read Discord conversations.'};
+ for(const service of services){
+  const c=card(service.label,descriptions[service.provider],group);c.append(tag(service.configured?'Credentials saved · test connection':'Not configured'));
+  const f=form(c,'Save encrypted credential',async(b,f)=>{await api(`/services/${service.provider}`,b);f.reset();toast('Credential saved');await render();});
+  const input=field(f,service.provider==='discord'?'Discord webhook URL':service.provider==='notion'?'Notion integration token':'GitHub personal access token','credential','password','',!service.configured);input.autocomplete='new-password';f.addButton();
+  if(!service.configured)continue;
+  const results=el('div');
+  const read=form(c,service.provider==='discord'?'Test webhook without sending':'Read from service',async b=>{const data=await api(`/services/${service.provider}/read`,b);results.replaceChildren();if(data.items){if(!data.items.length)results.append(el('p','No accessible results. Check permissions or shared pages.','muted'));for(const result of data.items){const row=el('p',result.title);if(typeof result.url==='string' && /^https:\/\//.test(result.url)){const a=el('a','Open ↗');a.href=result.url;a.target='_blank';a.rel='noreferrer';row.append(' · ',a);}results.append(row);}}else results.append(el('p',`Connected to ${data.name || 'Discord channel'}`));});
+  if(service.provider==='notion')field(read,'Find page title','query','text','',false);
+  if(service.provider==='github')select(read,'Read','kind',[['repositories','Repositories'],['issues','Assigned issues']]);
+  read.addButton();c.append(results);
+  if(service.provider==='discord'){
+   const send=form(c,'Review and send',async(b,f)=>{if(!confirm(`Send this message to the configured Discord channel?\n\n${b.text}`))return;await api('/services/discord/send',{text:b.text,confirmed:true});f.reset();toast('Discord accepted the message');});
+   field(send,'Message','text','textarea').maxLength=2000;send.addButton();
+  }
+  actions(c,[button('Disconnect',async()=>{if(!confirm(`Disconnect ${service.label}?`))return;await api(`/services/${service.provider}`,{},'DELETE');await render();},'danger')]);
+ }
 }

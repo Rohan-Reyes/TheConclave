@@ -531,3 +531,4 @@ body.is-m3 main#view { max-width: none; padding: 14px 18px 14px; }
 .jx-checklist li.done .jx-check-mark { color: var(--ok); }
 .jx-checklist li.todo .jx-check-mark { color: var(--warn); }
 .jx-checklist li.optional .jx-check-mark { color: var(--faint); }
+.jx-model-bar{display:flex;gap:8px;align-items:end;padding:8px 0;flex-wrap:wrap}.jx-model-bar label{font-size:11px;color:var(--muted);display:grid;gap:3px;margin:0}.jx-model-bar select,.jx-model-bar input{padding:6px;max-width:250px}.jx-model-bar button{white-space:nowrap}@media(max-width:600px){.jx-model-bar{gap:5px}.jx-model-bar select{max-width:180px}.jx-model-bar input{max-width:140px}}

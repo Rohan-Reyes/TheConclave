@@ -18,8 +18,10 @@ async function telegram() {
     list.append(li);
   }
   c.append(list);
-  if(status.voice_health?.state)c.append(el('p',`Last voice call: ${status.voice_health.state}`,'muted'));
+  if(status.voice_health?.state)c.append(el('p',`Last voice call: ${status.voice_health.state}${status.voice_health.stage?' · '+status.voice_health.stage:''}${status.voice_health.error?' · '+status.voice_health.error:''}`,'muted'));
 
+  if(status.voice_error?.error)c.append(el('p',`Last voice error: ${status.voice_error.stage || 'call'} · ${status.voice_error.error}`,'muted'));
+  c.append(el('p','Telegram model commands: /model to check, /model claude, /model codex, or /model antigravity. API models must first be configured in Connectors.','muted'));
   loginCard(status);
 
   const credentials = card('Telegram credentials', 'Edit these privately here. Saved API hashes and sessions are never displayed. Changing credentials turns delivery off until you enable it again.');

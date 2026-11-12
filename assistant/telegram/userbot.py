@@ -126,7 +126,7 @@ async def serve():
         with contextlib.redirect_stdout(sys.stderr):
             calls = PyTgCalls(client)
             await calls.start()
-            call_audio = CallAudio(calls, owner.id, config, call_lock, voice_reply, os.environ.get('TELEGRAM_STT_MODEL'), notify=lambda state: emit({'event':'voice_state','state':state}))
+            call_audio = CallAudio(calls, owner.id, config, call_lock, voice_reply, os.environ.get('TELEGRAM_STT_MODEL'), notify=lambda state, detail=None: emit({'event':'voice_state','state':state,**(detail or {})}))
             await call_audio.initialize()
 
     if config.get('conversation_enabled') and config.get('calls_enabled') and own.id != owner.id:

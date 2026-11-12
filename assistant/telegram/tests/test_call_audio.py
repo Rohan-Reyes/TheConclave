@@ -55,6 +55,20 @@ class Tests(unittest.IsolatedAsyncioTestCase):
     async def test_owner_hangup_sets_closed(self):
         await self.calls.handler(None,ChatUpdate(999,ChatUpdate.Status.LEFT_CALL));self.assertFalse(self.audio.closed.is_set())
         await self.calls.handler(None,ChatUpdate(123,ChatUpdate.Status.LEFT_CALL));self.assertTrue(self.audio.closed.is_set())
+    async def test_incoming_uses_explicit_media_and_survives_greeting_failure(self):
+        self.types.RecordStream=lambda **kw:kw
+        self.types.ExternalMedia=types.SimpleNamespace(AUDIO='external-audio')
+        self.calls.play=AsyncMock();self.calls.record=AsyncMock();self.calls.leave_call=AsyncMock()
+        self.audio.say=AsyncMock(side_effect=[RuntimeError('speech unavailable'),None])
+        self.audio.listen=AsyncMock(return_value='goodbye')
+        states=[];self.audio.notify=lambda state,detail=None:states.append(state)
+        fake_vosk=types.SimpleNamespace(KaldiRecognizer=lambda *args:object())
+        fake_raw=types.SimpleNamespace(AudioParameters=lambda **kw:kw)
+        with patch.dict(sys.modules,{'vosk':fake_vosk,'pytgcalls.types.raw':fake_raw}):
+            await self.audio.converse()
+        self.calls.play.assert_awaited_once_with(123,'external-audio')
+        self.audio.listen.assert_awaited_once()
+        self.assertIn('speech_unavailable',states);self.assertNotIn('error',states)
     async def test_local_turn_recognition(self):
         recognizer=types.SimpleNamespace(AcceptWaveform=lambda b:True,Result=lambda:'{"text":"hello jarvis"}')
         await self.audio.frames.put(b'\0'*3200)

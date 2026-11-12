@@ -90,3 +90,17 @@ The owner may enable incoming conversational calls from the separate userbot acc
 This is **turn-based**, not a full duplex realtime session: pause after speaking and wait for the answer. Audio received while Jarvis speaks is discarded to avoid feedback; barge-in is not implemented. English is the supported recognition language; Filipino/Taglish recognition is unverified. Calls stop on hangup, a recognized goodbye/end-call phrase, 45 seconds waiting for speech or the ten-minute session limit. The configured model may add response latency (especially CLI providers). The Telegram page displays the last voice-call state without logging speech or credentials.
 
 Offline tests cover owner gating, disabled calls, local-turn handling, playback cleanup and reuse of the Jarvis conversation. Neural TTS and local recognition were smoke-tested on the Pi. A real incoming Telegram call is still required to validate the complete media path, echo behavior, recognition accuracy and reply latency.
+
+## Call recovery, model switching and additional connectors
+
+Incoming Telegram calls now negotiate with an explicit external audio source instead of empty media. A failed greeting or later TTS reply does not immediately hang up an otherwise connected call. Voice errors retain a bounded error class and stage in Telegram settings; no raw provider exception text, audio or secrets are logged. A real incoming call remains necessary to establish whether the reported three-second drop is resolved.
+
+Management has a provider/model-ID selector, also available through owner-only Telegram commands `/model`, `/model claude`, `/model codex`, `/model antigravity`, and `/model <provider> <model-id>`. API providers require private setup in Connectors. Switching retains separate encrypted provider credentials and the shared Jarvis conversation. Disconnecting the model connector removes saved provider keys too. Telegram text and voice now use the same Jarvis conversation as Management. Text reply failures produce a useful Telegram error message rather than silently marking a message failed. CLI availability checks do not prove its login/quota or response execution will succeed.
+
+Additional connectors:
+
+- GitHub: fine-grained token; read the first 20 accessible repositories or assigned issues. Uses the [authenticated repositories API](https://docs.github.com/en/rest/repos/repos) and fixed GitHub API origin. No repository writes.
+- Notion: integration token; search the first 20 page titles explicitly shared with the integration, with a `has_more` indication. Uses the [search API](https://developers.notion.com/reference/post-search). It does not retrieve full page bodies.
+- Discord: one official `discord.com` webhook URL; inspect channel metadata without sending, then explicitly preview/confirm each message. Uses the [webhook API](https://github.com/discord/discord-api-docs/blob/main/developers/resources/webhook.mdx), waits for confirmation, disables mentions and never retries an uncertain send automatically. This connector does not read Discord chats.
+
+GitHub and Notion reads are also available to Jarvis tools as untrusted data. Discord sending is available only through the explicit owner UI/API confirmation, not as a model tool. No connector token or webhook URL is returned in listing responses. Existing Google, Microsoft, weather and Telegram connectors remain available. Third-party accounts were not connected or messaged during development.
