@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { id, audit } from './db.js';
 import { getSecret, setSecret, modelReply } from './integrations.js';
 
-export const TELEGRAM_VOICES=['en-US-AndrewMultilingualNeural','en-GB-RyanNeural','en-US-AvaMultilingualNeural','fil-PH-AngeloNeural','fil-PH-BlessicaNeural'];
+export const TELEGRAM_VOICES=['en-GB-RyanNeural','en-US-AndrewMultilingualNeural','en-US-AvaMultilingualNeural','fil-PH-AngeloNeural','fil-PH-BlessicaNeural'];
 export function telegramSchema(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS telegram_outbox(id TEXT PRIMARY KEY,kind TEXT NOT NULL,text TEXT NOT NULL,state TEXT NOT NULL,created_at INTEGER NOT NULL,error TEXT,completed_at INTEGER);
     CREATE TABLE IF NOT EXISTS telegram_seen(account TEXT NOT NULL,message_id INTEGER NOT NULL,state TEXT NOT NULL,PRIMARY KEY(account,message_id));`);
@@ -65,7 +65,7 @@ export class TelegramBridge {
     this.child.stdin.on('error',()=>{});this.child.once('error',()=>this.fail());this.child.once('exit',()=>this.fail());
     const lines=createInterface({input:this.child.stdout});lines.on('line',line=>{
       let result;try{result=JSON.parse(line);}catch{return;}
-      if(result.event==='voice_state'){if(['connecting','listening','thinking','speaking','closed','error','speech_unavailable'].includes(result.state))onVoiceState?.(result.state,{stage:typeof result.stage==='string'?result.stage.slice(0,30):undefined,error:typeof result.error==='string'?result.error.slice(0,60):undefined});return;}
+      if(result.event==='voice_state'){if(['connecting','listening','thinking','speaking','closed','error','speech_unavailable','interrupted','text_fallback'].includes(result.state))onVoiceState?.(result.state,{stage:typeof result.stage==='string'?result.stage.slice(0,30):undefined,error:typeof result.error==='string'?result.error.slice(0,60):undefined});return;}
       if(result.event==='voice_turn'){
         if(!onVoiceTurn || typeof result.turn_id!=='string' || typeof result.text!=='string' || result.text.length>2000)return;
         Promise.resolve().then(()=>onVoiceTurn(result.text)).catch(()=> 'I could not prepare a reply. Please check the model connection in Conclave.').then(text=>{if(!this.closed)return this.request('voice_answer',{turn_id:result.turn_id,text:String(text).slice(0,2400)});}).catch(()=>{});return;
@@ -97,7 +97,7 @@ export class TelegramWorker {
     if(!conversation){conversation={id:id()};this.db.prepare('INSERT INTO conversations VALUES(?,?,?)').run(conversation.id,'Jarvis',Date.now());}
     this.db.prepare('INSERT INTO messages VALUES(?,?,?,?,?,?)').run(id(),conversation.id,'user',text,'telegram-voice-owner',Date.now());
     const hits=relevantMemories(this.db,text);recordActivity(this.db,hits,'chat');
-    const answer=await this.reply(this.db,this.key,conversation.id,hits.map(h=>h.id),this.instructions()+'\nYou are speaking on a phone call. Reply briefly in plain spoken language. Ask for confirmation of uncertain transcriptions before consequential actions.');
+    const answer=await this.reply(this.db,this.key,conversation.id,hits.map(h=>h.id),this.instructions()+'\nYou are speaking on a phone call. Reply in one or two short sentences, around 50 words, unless the owner explicitly requests detail. Use plain spoken language without Markdown or emoji. Ask for confirmation of uncertain transcriptions before consequential actions.');
     this.db.prepare('INSERT INTO messages VALUES(?,?,?,?,?,?)').run(id(),conversation.id,'assistant',answer,'telegram-voice-model',Date.now());
     return answer;
   }

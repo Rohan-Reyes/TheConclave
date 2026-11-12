@@ -117,6 +117,9 @@ async def serve():
         finally:
             voice_replies.pop(turn_id, None)
 
+    async def text_fallback(text):
+        await client.send_message(owner, '[Conclave] Voice reply (speech unavailable): ' + str(text)[:3600], parse_mode=None)
+
     async def init_calls():
         nonlocal calls, call_audio
         if calls is not None:
@@ -126,7 +129,7 @@ async def serve():
         with contextlib.redirect_stdout(sys.stderr):
             calls = PyTgCalls(client)
             await calls.start()
-            call_audio = CallAudio(calls, owner.id, config, call_lock, voice_reply, os.environ.get('TELEGRAM_STT_MODEL'), notify=lambda state, detail=None: emit({'event':'voice_state','state':state,**(detail or {})}))
+            call_audio = CallAudio(calls, owner.id, config, call_lock, voice_reply, os.environ.get('TELEGRAM_STT_MODEL'), notify=lambda state, detail=None: emit({'event':'voice_state','state':state,**(detail or {})}), text_fallback=text_fallback)
             await call_audio.initialize()
 
     if config.get('conversation_enabled') and config.get('calls_enabled') and own.id != owner.id:
