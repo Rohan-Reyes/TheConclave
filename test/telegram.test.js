@@ -32,3 +32,11 @@ test('credential editing encrypts secrets, disables delivery and cancels old que
  assert.throws(()=>configureTelegram(db,key,{owner_id:-100}),/positive numeric/);
  db.close();
 });
+test('voice conversations use the existing Jarvis chat and require explicit permissions',async()=>{
+ const db=openDb(':memory:');const voiceConfig={...config,calls_enabled:true,conversation_enabled:true};setSecret(db,'config:telegram',voiceConfig,key);
+ db.prepare('INSERT INTO conversations VALUES(?,?,?)').run('existing-jarvis','Jarvis',Date.now());
+ let used;const worker=new TelegramWorker(db,key,{reply:async(db,key,id,memories,instructions)=>{used={id,instructions};return 'Your next task is ready.';}});
+ assert.equal(await worker.voiceReply('What is my next task?'),'Your next task is ready.');assert.equal(used.id,'existing-jarvis');assert.match(used.instructions,/uncertain transcriptions/);
+ assert.equal(db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id=?').get('existing-jarvis').n,2);
+ setSecret(db,'config:telegram',{...voiceConfig,conversation_enabled:false},key);await assert.rejects(()=>worker.voiceReply('No permission'),/disabled/);db.close();
+});

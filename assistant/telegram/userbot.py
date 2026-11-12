@@ -6,7 +6,6 @@ import logging
 import os
 import sys
 import tempfile
-import wave
 
 logging.disable(logging.CRITICAL)
 PROTOCOL = sys.stdout
@@ -103,7 +102,35 @@ async def serve():
     if not getattr(owner, 'id', None) or owner.id != int(config['owner_id']):
         raise RuntimeError('OwnerNotResolved')
     calls = None
+    call_audio = None
+    voice_replies = {}
     call_lock = asyncio.Lock()
+
+    async def voice_reply(text):
+        import uuid
+        turn_id = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        voice_replies[turn_id] = future
+        emit({'event':'voice_turn','turn_id':turn_id,'text':text})
+        try:
+            return await asyncio.wait_for(future, 95)
+        finally:
+            voice_replies.pop(turn_id, None)
+
+    async def init_calls():
+        nonlocal calls, call_audio
+        if calls is not None:
+            return
+        from pytgcalls import PyTgCalls
+        from call_audio import CallAudio
+        with contextlib.redirect_stdout(sys.stderr):
+            calls = PyTgCalls(client)
+            await calls.start()
+            call_audio = CallAudio(calls, owner.id, config, call_lock, voice_reply, os.environ.get('TELEGRAM_STT_MODEL'), notify=lambda state: emit({'event':'voice_state','state':state}))
+            await call_audio.initialize()
+
+    if config.get('conversation_enabled') and config.get('calls_enabled') and own.id != owner.id:
+        await init_calls()
     emit({'ready': True, 'account_id': own.id, 'self_chat': own.id == owner.id})
 
     async def handle(request):
@@ -111,6 +138,12 @@ async def serve():
         request_id = request.get('id')
         try:
             op = request['op']
+            if op == 'voice_answer':
+                future = voice_replies.get(request.get('turn_id'))
+                if future and not future.done():
+                    future.set_result(str(request.get('text', 'I could not prepare a reply.'))[:2400])
+                emit({'id':request_id,'result':{'ok':True}})
+                return
             if op == 'poll':
                 after = int(request.get('after', 0))
                 messages = [m async for m in client.iter_messages(owner, limit=50, min_id=after, reverse=after > 0)]
@@ -140,27 +173,13 @@ async def serve():
                 if call_lock.locked():
                     raise RuntimeError('CallAlreadyRunning')
                 async with call_lock:
-                    from pytgcalls import PyTgCalls
-                    from pytgcalls.types import MediaStream
-                    if calls is None:
-                        with contextlib.redirect_stdout(sys.stderr):
-                            calls = PyTgCalls(client)
-                            await calls.start()
-                    with tempfile.TemporaryDirectory(prefix='conclave-call-') as folder:
-                        audio = os.path.join(folder, 'message.wav')
-                        speech = await asyncio.create_subprocess_exec('espeak-ng', '-w', audio, '--stdin', stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-                        await speech.communicate(str(request['text'])[:800].encode())
-                        if speech.returncode:
-                            raise RuntimeError('SpeechFailed')
-                        with wave.open(audio) as wav:
-                            duration = min(90, wav.getnframes() / wav.getframerate() + 3)
-                        try:
-                            with contextlib.redirect_stdout(sys.stderr):
-                                await asyncio.wait_for(calls.play(owner.id, MediaStream(audio)), timeout=45)
-                            await asyncio.sleep(duration)
-                        finally:
-                            with contextlib.suppress(Exception):
-                                await calls.leave_call(owner.id)
+                    await init_calls()
+                    call_audio.closed.clear()
+                    try:
+                        await call_audio.say(str(request['text'])[:800])
+                    finally:
+                        with contextlib.suppress(Exception):
+                            await asyncio.wait_for(calls.leave_call(owner.id), 10)
                     emit({'id': request_id, 'result': {'completed': True}})
                     return
             raise RuntimeError('UnknownOperation')
@@ -183,6 +202,8 @@ async def serve():
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
+        if call_audio:
+            await call_audio.close()
         await client.disconnect()
 
 if __name__ == '__main__':

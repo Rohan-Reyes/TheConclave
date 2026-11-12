@@ -18,6 +18,7 @@ async function telegram() {
     list.append(li);
   }
   c.append(list);
+  if(status.voice_health?.state)c.append(el('p',`Last voice call: ${status.voice_health.state}`,'muted'));
 
   loginCard(status);
 
@@ -32,12 +33,14 @@ async function telegram() {
   if (!status.configured) return;
 
   c.append(el('p', `Allowed owner: ${status.owner_id}. In Saved Messages on the same account, prefix requests with /conclave. A separate userbot account can receive ordinary private messages from this owner.`));
-  const f = form(c, 'Save Telegram settings', async b => { await api('/telegram/config', { enabled: b.enabled === 'on', calls_enabled: b.calls_enabled === 'on', notifications: b.notifications === 'on' }); toast('Telegram settings saved'); await render(); });
+  const f = form(c, 'Save Telegram settings', async b => { await api('/telegram/config', { enabled: b.enabled === 'on', calls_enabled: b.calls_enabled === 'on', notifications: b.notifications === 'on',conversation_enabled:b.conversation_enabled==='on',voice:b.voice }); toast('Telegram settings saved'); await render(); });
   checkbox(f, 'enabled', 'Enable owner-only Telegram chat', status.enabled);
   checkbox(f, 'calls_enabled', 'Allow outbound spoken-message calls', status.calls_enabled);
   checkbox(f, 'notifications', 'Send new reminder and automation notifications', status.notifications);
+  checkbox(f,'conversation_enabled','Answer my incoming calls for spoken conversation (English)',status.conversation_enabled);
+  select(f,'Call voice','voice',(status.voice_choices || []).map(v=>[v,({'en-US-AndrewMultilingualNeural':'Andrew · natural male','en-GB-RyanNeural':'Ryan · British male','en-US-AvaMultilingualNeural':'Ava · natural female','fil-PH-AngeloNeural':'Angelo · Filipino male','fil-PH-BlessicaNeural':'Blessica · Filipino female'})[v] || v]),status.voice);
   f.addButton();
-  c.append(el('p', 'Calls speak the supplied message; two-way voice conversation is not enabled. Chat replies use your connected assistant model.', 'muted'));
+  c.append(el('p', 'Outbound alerts speak the supplied message. Enable conversational calls to phone the userbot from your owner account and take turns speaking with Jarvis. Speech recognition runs locally in English; reply text is sent to Microsoft Edge TTS. Call transcripts are kept in your Jarvis chat. Pause after speaking and wait for the reply; interruption is not supported yet.', 'muted'));
   actions(c, [button('Disconnect Telegram', async () => { if (!confirm('Disconnect Telegram and remove the saved session?')) return; await api('/telegram', {}, 'DELETE'); await render(); }, 'danger')]);
 
   const send = card('Contact me', 'Only your configured owner account can be contacted. /call followed by a message also requests a spoken call from Telegram.');

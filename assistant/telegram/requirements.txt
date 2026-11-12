@@ -1,2 +1,4 @@
 Telethon==1.45.0
 py-tgcalls==3.0.0
+edge-tts==7.3.1
+vosk==0.3.45
